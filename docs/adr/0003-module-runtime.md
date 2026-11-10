@@ -56,7 +56,8 @@ schema, so the whole unit-test suite doubles as a conformance test. The core's
   `mandatory=true` (an unroutable event is an error, not a silent drop).
 - Exchanges are owned by the core and only checked passively; a missing exchange fails
   `start()`. `MF_DECLARE_TOPOLOGY=true` declares them too (local experiments without a core).
-- `module.online` once after consuming starts; `module.heartbeat` every 10 s;
+- `module.online` after consuming starts and again after every broker reconnect (the
+  exclusive control queue is new then); `module.heartbeat` every 10 s;
   `module.offline` on graceful stop.
 - `/healthz` (alive) and `/readyz` (broker connected, consumer running) on `MF_HEALTH_ADDR`
   (default `:8081`, empty or `off` disables).
@@ -92,35 +93,26 @@ schema, so the whole unit-test suite doubles as a conformance test. The core's
 `MF_LOG_LEVEL`, plus SDK knobs (`MF_SHUTDOWN_GRACE_S`, `MF_CANCEL_GRACE_S`, ...). If
 `MF_MODULE_NAME` is set it must match `Module(name)`. `MF_S3_*` is for S3 (blob store).
 
-## Compromises — questions for the core author
+## Open questions and preliminary answers
 
-These are isolated in the runtime and easy to change once answered:
+The questions below went to the core author. The architect's answers (2026-11-10) are
+**preliminary**: the final ones come with contract 0.3.0 and the "SDK Q&A" section of the
+coordination notes. Status shows what the SDK does now.
 
-1. **`run.requested` message id.** The contract defines ids only for step results. The SDK uses
-   `uuid5(NS, "run.requested:<pipeline>:<dedup_key>")` so a re-published request is
-   deduplicated by message id as well as by `dedup_key`. OK, or should it be uuid4?
-2. **Default `dedup_key`.** When a source does not set one, the SDK uses
-   `"<trigger_id>:<index>"`. Is that what the core expects, or should it be omitted?
-3. **`trigger_id` for `on_start`/`every` runs.** Those runs have no core trigger, so the SDK does
-   not send `trigger_id` (it must be a uuid of a core trigger?). Confirm.
-4. **`on_start`/`every` with several replicas** produce one run per replica (deduplicated only if
-   the source sets a stable `dedup_key`). Should these move to core-side schedules
-   (`source.trigger`) only?
-5. **Unknown pipeline in `source.trigger`** is dead-lettered. Should it rather be acked and
-   reported (there is no `source.failed` message)?
-6. **Shutdown error**: `class=transient, code=module_shutdown`. Is a reserved code wanted?
-7. **`module.online` after a reconnect.** Sent once per process start. Should it be re-sent
-   when the robust connection reconnects (new control queue)?
-8. **Long steps vs `consumer_timeout`.** With late ack, a step longer than RabbitMQ's
-   `consumer_timeout` (30 min default) closes the channel. Does the core set a larger
-   `consumer_timeout` (per queue `x-consumer-timeout`) for `mf.module.*`? The SDK cannot add
-   arguments the core does not declare.
-9. **`user_id` property.** The SDK sets AMQP `user_id` to the URL user (RabbitMQ validates it).
-   Is the core going to rely on it to authenticate the producer?
-10. **No step output patching from the module** beyond `output` (no `patch`/`metrics` in 0.2.1).
-    Metrics will go to `/metrics` in S3+.
-11. **Envelope validation cost.** Every inbound message is validated against the JSON Schema
-    (≤ 256 KiB). Fine for now; can drop to pydantic-only if it shows up in profiles.
+| # | Question | Preliminary answer | SDK status |
+|---|---|---|---|
+| 1 | `run.requested` message id: the SDK uses `uuid5(NS, "run.requested:<pipeline>:<dedup_key>")` | OK | done |
+| 2 | Default `dedup_key` = `"<trigger_id>:<index>"` | OK | done |
+| 3 | No `trigger_id` for `on_start`/`every` runs (no core trigger exists) | correct | done |
+| 4 | `on_start`/`every` start one run per replica | Schedules move to the core (`source.trigger`) | marked **temporary**: docstring, a warning log at start; `Runtime(local_schedules=False)` turns them off. Removal after the core has schedules |
+| 5 | Unknown pipeline in `source.trigger` is dead-lettered | The core will send `run.rejected` to the control queue | unchanged until the message is in the contract (0.3.0) |
+| 6 | Shutdown error `transient/module_shutdown` | Reserved | `ErrorCode.MODULE_SHUTDOWN` (with the other SDK codes in `manufacture.ErrorCode`) |
+| 7 | `module.online` after a reconnect | Re-send it | done: `Transport.on_reconnect`; the AMQP transport hooks aio-pika's reconnect callbacks, which fire after queues, bindings and consumers are restored |
+| 8 | Late ack vs RabbitMQ `consumer_timeout` for long steps | Likely ack on receipt + lease/heartbeats in the core | **no change** until the final contract |
+| 9 | AMQP `user_id` set from the URL user | The core identifies the module by `user_id` | done (unchanged) |
+| 10 | Output only, no patch/metrics; SDK metrics on `/metrics` | `/metrics` OK | planned (S3) |
+| 11 | SDK declares and binds the work queue idempotently | OK | done (unchanged) |
+| — | Envelope validation of every inbound message (≤ 256 KiB) | — | kept; revisit if it shows up in profiles |
 
 ## Consequences
 

@@ -6,7 +6,9 @@ Topology (names, queue arguments, who declares what) follows ``docs/contract/mes
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -15,7 +17,7 @@ import aio_pika
 from pydantic import SecretStr
 from yarl import URL
 
-from manufacture.transport import DeliveryHandler, Identity, Inbound
+from manufacture.transport import DeliveryHandler, Identity, Inbound, ReconnectHandler
 
 if TYPE_CHECKING:
     from aio_pika.abc import (
@@ -29,6 +31,8 @@ if TYPE_CHECKING:
     from manufacture._wire import Topology
 
 __all__ = ["AmqpTransport"]
+
+_log = logging.getLogger("manufacture.transport")
 
 
 class _AmqpDelivery:
@@ -85,6 +89,8 @@ class AmqpTransport:
         self._events: AbstractExchange | None = None
         self._consumers: dict[Inbound, _Consumer] = {}
         self._user_id = URL(self._url.get_secret_value()).user or None
+        self._reconnect_handlers: list[ReconnectHandler] = []
+        self._reconnect_tasks: set[asyncio.Task[None]] = set()
 
     @property
     def ready(self) -> bool:
@@ -93,6 +99,22 @@ class AmqpTransport:
             conn and not conn.is_closed and conn.connected.is_set() and ch and not ch.is_closed
         )
 
+    def on_reconnect(self, handler: ReconnectHandler) -> None:
+        self._reconnect_handlers.append(handler)
+
+    def _reconnected(self, *_: object) -> None:
+        # aio-pika calls this after the robust channels re-declared their queues, bindings
+        # and consumers. Run the handlers in tasks so a slow publish cannot stall recovery.
+        for handler in self._reconnect_handlers:
+            task = asyncio.create_task(handler())
+            self._reconnect_tasks.add(task)
+            task.add_done_callback(self._reconnect_done)
+
+    def _reconnect_done(self, task: asyncio.Task[None]) -> None:
+        self._reconnect_tasks.discard(task)
+        if not task.cancelled() and (exc := task.exception()) is not None:
+            _log.warning("reconnect handler failed: %s", type(exc).__name__)
+
     async def connect(self, identity: Identity) -> None:
         self._identity = identity
         self._conn = await aio_pika.connect_robust(
@@ -100,6 +122,7 @@ class AmqpTransport:
             timeout=self._timeout_s,
             client_properties={"connection_name": f"mf:{identity.module}:{identity.replica_id}"},
         )
+        self._conn.reconnect_callbacks.add(self._reconnected)
         self._pub_channel = await self._conn.channel(publisher_confirms=True, on_return_raises=True)
         self._events = await self._exchange(
             self._pub_channel, self._topology.events, aio_pika.ExchangeType.TOPIC
@@ -156,6 +179,8 @@ class AmqpTransport:
         await self._events.publish(message, routing_key=type_, mandatory=True)
 
     async def close(self) -> None:
+        for task in list(self._reconnect_tasks):
+            task.cancel()
         for consumer in self._consumers.values():
             with contextlib.suppress(Exception):
                 await consumer.channel.close()

@@ -2,8 +2,9 @@
 
 Implements the replica side of ``docs/contract/messaging.md`` (contract 0.2.1):
 
-- **Lifecycle**: connect, declare the work and control queues, ``module.online``,
-  ``module.heartbeat`` every 10 s, ``module.offline`` on graceful shutdown.
+- **Lifecycle**: connect, declare the work and control queues, ``module.online`` (again
+  after every reconnect), ``module.heartbeat`` every 10 s, ``module.offline`` on graceful
+  shutdown.
 - **Late ack**: a ``step.requested`` delivery is acked only after the result is confirmed
   by the broker, so prefetch (= concurrency) bounds in-flight work and the queue depth is an
   honest load metric. If the replica dies, the broker redelivers.
@@ -39,7 +40,7 @@ from manufacture._log import StructLogger, get_logger
 from manufacture._version import __version__
 from manufacture.app import RunRequest
 from manufacture.context import Context, S, Secrets, SourceContext
-from manufacture.errors import StepError
+from manufacture.errors import ErrorCode, StepError
 from manufacture.health import HealthServer
 from manufacture.settings import RuntimeSettings
 from manufacture.transport import Delivery, Identity, Inbound, Transport
@@ -78,7 +79,7 @@ def classify_exception(exc: BaseException) -> wire.StepFailed:
             retry_after_seconds=retry,
         )
     text = f"{type(exc).__name__}: {exc}"[:_MAX_ERROR_MESSAGE]
-    return wire.StepFailed(error_class="transient", code="unhandled", message=text)
+    return wire.StepFailed(error_class="transient", code=ErrorCode.UNHANDLED, message=text)
 
 
 def _failed(error_class: wire.ErrorClass, code: str, message: str) -> wire.StepFailed:
@@ -115,8 +116,12 @@ class Runtime(Generic[S]):
         settings: RuntimeSettings | None = None,
         transport: Transport | None = None,
         secrets: Secrets | None = None,
+        local_schedules: bool = True,
     ) -> None:
+        """``local_schedules=False`` skips ``on_start``/``every`` (tests, and later the core's
+        own schedules); sources then run only on ``source.trigger``."""
         self.module = module
+        self.local_schedules = local_schedules
         self.settings = settings or RuntimeSettings()
         if self.settings.module_name and self.settings.module_name != module.name:
             raise ValueError(
@@ -192,6 +197,7 @@ class Runtime(Generic[S]):
             if (addr := self.settings.health) is not None:
                 self._health = HealthServer(addr[0], addr[1], ready=lambda: self.ready)
                 await self._health.start()
+            self.transport.on_reconnect(self._on_reconnect)
             await self.transport.connect(self.identity)
             await self.transport.consume(Inbound.CONTROL, self._on_control, prefetch=64)
             await self.transport.consume(Inbound.WORK, self._on_work, prefetch=self.concurrency)
@@ -201,7 +207,14 @@ class Runtime(Generic[S]):
         self._accepting = True
         await self._publish_best_effort("module.online", self._online_payload())
         self._spawn(self._module_heartbeat_loop())
-        for src in sources:
+        for src in sources if self.local_schedules else ():
+            if src.on_start or src.every_s is not None:
+                self.log.warning(
+                    "on_start/every are temporary: schedules move to the core "
+                    "(source.trigger); see ADR 0003",
+                    source=src.name,
+                    pipeline=src.pipeline,
+                )
             if src.on_start:
                 self._spawn_source(src, str(uuid.uuid4()), "start", {}, send_trigger_id=False)
             if src.every_s is not None:
@@ -299,7 +312,10 @@ class Runtime(Generic[S]):
         if self.module.step_spec is None:
             log.error("step.requested for a module without @step")
             outcome = self._outcome(
-                env, attempt, _failed("fatal", "no_step_handler", "module has no step handler"), 0
+                env,
+                attempt,
+                _failed("fatal", ErrorCode.NO_STEP_HANDLER, "module has no step handler"),
+                0,
             )
             await self._publish_and_settle(outcome, [delivery])
             return
@@ -384,7 +400,7 @@ class Runtime(Generic[S]):
             inp = spec.input_model.model_validate(ex.request.input)
         except ValidationError as exc:
             log.error("invalid step input", errors=exc.error_count())
-            return self._fail(ex, _failed("fatal", "input_invalid", _summarize(exc)))
+            return self._fail(ex, _failed("fatal", ErrorCode.INPUT_INVALID, _summarize(exc)))
         log.info("step started")
         ex.handler_task = asyncio.create_task(spec.handler(ex.ctx, inp))
         try:
@@ -407,10 +423,14 @@ class Runtime(Generic[S]):
                 log.warning("step interrupted by shutdown", duration_ms=ex.duration_ms)
                 return self._fail(
                     ex,
-                    _failed("transient", "module_shutdown", "replica shut down before finishing"),
+                    _failed(
+                        "transient", ErrorCode.MODULE_SHUTDOWN, "replica shut down before finishing"
+                    ),
                 )
             log.warning("handler cancelled itself", duration_ms=ex.duration_ms)
-            return self._fail(ex, _failed("transient", "cancelled", "handler was cancelled"))
+            return self._fail(
+                ex, _failed("transient", ErrorCode.CANCELLED, "handler was cancelled")
+            )
         except Exception as exc:
             failure = classify_exception(exc)
             if isinstance(exc, StepError):
@@ -425,7 +445,7 @@ class Runtime(Generic[S]):
             )
         except ValidationError as exc:
             log.error("invalid step output", errors=exc.error_count())
-            return self._fail(ex, _failed("fatal", "output_invalid", _summarize(exc)))
+            return self._fail(ex, _failed("fatal", ErrorCode.OUTPUT_INVALID, _summarize(exc)))
         succeeded = wire.StepSucceeded(
             output=model.model_dump(mode="json"),
             replica_id=self.identity.replica_id,
@@ -522,6 +542,14 @@ class Runtime(Generic[S]):
             attempt=ex.attempt,
             traceparent=ex.env.traceparent,
         )
+
+    async def _on_reconnect(self) -> None:
+        """The broker connection came back with a new control queue: announce the replica
+        again so the core refreshes its state (answer to ADR 0003 Q7)."""
+        if not self._started:
+            return
+        self.log.warning("broker connection restored; re-announcing module.online")
+        await self._publish_best_effort("module.online", self._online_payload())
 
     async def _module_heartbeat_loop(self) -> None:
         while True:

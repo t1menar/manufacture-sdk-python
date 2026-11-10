@@ -21,10 +21,11 @@ from pydantic import BaseModel
 from manufacture import _wire as wire
 from manufacture.contract import validate_envelope
 from manufacture.settings import RuntimeSettings
-from manufacture.transport import DeliveryHandler, Identity, Inbound
+from manufacture.transport import DeliveryHandler, Identity, Inbound, ReconnectHandler
 
 if TYPE_CHECKING:
     from manufacture.app import Module
+    from manufacture.runtime import Runtime
 
 __all__ = [
     "ATTEMPT_ID",
@@ -33,7 +34,10 @@ __all__ = [
     "FakeDelivery",
     "FakeTransport",
     "Published",
+    "SourceCallResult",
     "StepCallResult",
+    "call_on_start",
+    "call_source",
     "call_step",
     "source_trigger",
     "step_cancel",
@@ -103,15 +107,24 @@ class FakeTransport:
         self.fail_next_publishes = 0
         self.closed = False
         self.connected = False
+        self.reconnect_handlers: list[ReconnectHandler] = []
         self._changed = asyncio.Condition()
 
     @property
     def ready(self) -> bool:
         return self.connected and not self.closed
 
+    def on_reconnect(self, handler: ReconnectHandler) -> None:
+        self.reconnect_handlers.append(handler)
+
     async def connect(self, identity: Identity) -> None:
         self.identity = identity
         self.connected = True
+
+    async def simulate_reconnect(self) -> None:
+        """Behave like a broker connection that was lost and restored."""
+        for handler in self.reconnect_handlers:
+            await handler()
 
     async def consume(self, stream: Inbound, handler: DeliveryHandler, *, prefetch: int) -> None:
         self.handlers[stream] = handler
@@ -292,3 +305,70 @@ async def call_step(
         await runtime.stop()
     beats = [p.payload for p in transport.of_type("step.heartbeat")]
     return StepCallResult(result.type, result.payload, beats)
+
+
+@dataclass(frozen=True)
+class SourceCallResult:
+    """What a source did for one trigger."""
+
+    runs: list[dict[str, Any]]
+    """``run.requested`` payloads in the order they were published."""
+    acked: bool
+    """``False``: the source failed and the trigger was dead-lettered."""
+    trigger_id: str | None
+
+
+def _quiet_runtime(
+    module: Module[Any], transport: FakeTransport, *, schedules: bool, grace_s: float
+) -> Runtime[Any]:
+    from manufacture.runtime import Runtime  # noqa: PLC0415 (import cycle)
+
+    settings = RuntimeSettings(
+        health_addr="", replica_id="test", module_heartbeat_s=3600, shutdown_grace_s=grace_s
+    )
+    return Runtime(module, settings=settings, transport=transport, local_schedules=schedules)
+
+
+async def call_source(
+    module: Module[Any],
+    data: dict[str, Any] | None = None,
+    *,
+    pipeline: str | None = None,
+    trigger_id: str | None = None,
+    timeout_s: float = 10.0,
+) -> SourceCallResult:
+    """Deliver one ``source.trigger`` (as the core does for the "Run" button, a schedule or
+    ``mfctl run``) and return the runs the source requested. ``on_start``/``every`` do not
+    run. ``pipeline`` is required only when the module has sources for several pipelines.
+    """
+    if pipeline is None:
+        pipelines = [s.pipeline for s in module.sources]
+        if len(pipelines) != 1:
+            raise ValueError(f"module {module.name} has sources for {pipelines}; pass pipeline=")
+        pipeline = pipelines[0]
+    trigger_id = trigger_id or str(uuid.uuid4())
+    transport = FakeTransport()
+    runtime = _quiet_runtime(module, transport, schedules=False, grace_s=timeout_s)
+    await runtime.start()
+    try:
+        delivery = await transport.deliver(
+            source_trigger(pipeline, trigger_id=trigger_id, data=data)
+        )
+        state = await delivery.wait(timeout=timeout_s)
+    finally:
+        await runtime.stop()
+    runs = [p.payload for p in transport.of_type("run.requested")]
+    return SourceCallResult(runs=runs, acked=state == "acked", trigger_id=trigger_id)
+
+
+async def call_on_start(module: Module[Any], *, timeout_s: float = 10.0) -> SourceCallResult:
+    """Start the module like a fresh replica and return the runs its ``on_start`` sources
+    requested. Temporary, like ``on_start`` itself (schedules move to the core)."""
+    if not any(s.on_start for s in module.sources):
+        raise ValueError(f"module {module.name} has no on_start source")
+    transport = FakeTransport()
+    runtime = _quiet_runtime(module, transport, schedules=True, grace_s=timeout_s)
+    await runtime.start()
+    await runtime.stop()  # a graceful stop lets the started sources finish (up to timeout_s)
+    runs = [p.payload for p in transport.of_type("run.requested")]
+    return SourceCallResult(runs=runs, acked=True, trigger_id=None)
