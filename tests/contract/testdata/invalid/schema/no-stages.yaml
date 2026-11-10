@@ -1,0 +1,5 @@
+# want: spec.stages | minItems
+apiVersion: manufacture.dev/v1
+kind: Pipeline
+metadata: {name: empty}
+spec: {stages: []}

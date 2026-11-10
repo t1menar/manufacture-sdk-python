@@ -1,0 +1,23 @@
+# want: spec.stages[0] | exactly one of step or parallel
+# want: spec.stages[1] | exactly one of step or parallel
+# want: spec.stages[2].foreach | use step instead of parallel
+# want: spec.stages[3].max_parallel | only to foreach stages
+# want: spec.stages[4].join | only to parallel and foreach stages
+apiVersion: manufacture.dev/v1
+kind: Pipeline
+metadata: {name: shapes}
+spec:
+  stages:
+    - name: none
+    - name: both
+      step: {module: a}
+      parallel: [{module: b}, {module: c}]
+    - name: foreach-parallel
+      foreach: data.items
+      parallel: [{module: b}, {module: c}]
+    - name: max-parallel
+      step: {module: a}
+      max_parallel: 2
+    - name: join-single
+      step: {module: a}
+      join: {mode: all}

@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://manufacture.dev/schemas/v1/pipeline.schema.json",
+  "title": "Manufacture v1: Pipeline",
+  "description": "Ordered stages. A stage runs one step, several parallel steps, or one step per item of a list (foreach). Rules that span several fields (exactly one of step/parallel, route targets, loop limits, CEL) are checked by `manufacture validate`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": { "const": "manufacture.dev/v1" },
+    "kind": { "const": "Pipeline" },
+    "metadata": { "$ref": "common.schema.json#/$defs/metadata" },
+    "spec": { "$ref": "#/$defs/pipelineSpec" }
+  },
+  "$defs": {
+    "pipelineSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stages"],
+      "properties": {
+        "trigger": {
+          "description": "How runs start. Manual runs (UI, API, mfctl run) are always allowed.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "source": {
+              "description": "Module that emits run requests (source module).",
+              "$ref": "common.schema.json#/$defs/name"
+            },
+            "schedule": {
+              "description": "Cron expression with 5 fields (minute hour day month weekday) or a descriptor such as @daily.",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        },
+        "concurrency": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_runs": { "type": "integer", "minimum": 1, "maximum": 100000 }
+          }
+        },
+        "context": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "schema": { "description": "JSON Schema (2020-12) of run data.", "type": "object" }
+          }
+        },
+        "blobs": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ttl": { "$ref": "common.schema.json#/$defs/duration" }
+          }
+        },
+        "defaults": {
+          "description": "Defaults applied to every step that does not set the field.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "timeout": { "$ref": "common.schema.json#/$defs/duration" },
+            "lease": { "$ref": "common.schema.json#/$defs/duration" },
+            "retry": { "$ref": "#/$defs/retry" }
+          }
+        },
+        "stages": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1000,
+          "items": { "$ref": "#/$defs/stage" }
+        }
+      }
+    },
+    "stage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "$ref": "common.schema.json#/$defs/name" },
+        "step": { "$ref": "#/$defs/step" },
+        "parallel": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/step" }
+        },
+        "foreach": {
+          "description": "CEL expression returning a list; the stage step runs once per item.",
+          "$ref": "common.schema.json#/$defs/expression"
+        },
+        "max_parallel": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "join": { "$ref": "#/$defs/join" },
+        "when": { "$ref": "common.schema.json#/$defs/expression" },
+        "routes": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/route" }
+        }
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module"],
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/name" },
+        "module": { "$ref": "common.schema.json#/$defs/name" },
+        "input": {
+          "description": "Input projection: field name -> CEL expression. Without it the step receives run data.",
+          "type": "object",
+          "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+          "additionalProperties": { "$ref": "common.schema.json#/$defs/expression" }
+        },
+        "config": { "type": "object" },
+        "timeout": { "$ref": "common.schema.json#/$defs/duration" },
+        "lease": { "$ref": "common.schema.json#/$defs/duration" },
+        "retry": { "$ref": "#/$defs/retry" },
+        "when": { "$ref": "common.schema.json#/$defs/expression" },
+        "merge": {
+          "description": "data: the step output is merged into run data (JSON Merge Patch); none: kept only under steps.<id>.output.",
+          "enum": ["data", "none"],
+          "default": "data"
+        },
+        "optional": {
+          "description": "A fatal failure of an optional step does not fail the run.",
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "retry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_attempts": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "backoff": { "enum": ["fixed", "exponential"], "default": "exponential" },
+        "initial": { "$ref": "common.schema.json#/$defs/duration" },
+        "max": { "$ref": "common.schema.json#/$defs/duration" },
+        "jitter": { "type": "boolean", "default": true },
+        "on_errors": {
+          "description": "Error classes that are retried.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["transient", "timeout", "lost"] }
+        }
+      }
+    },
+    "join": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "enum": ["all", "any", "quorum"], "default": "all" },
+        "quorum": { "type": "integer", "minimum": 1 },
+        "merge": {
+          "description": "What to do when parallel steps write the same key of run data.",
+          "enum": ["error", "last_wins", "array_append"],
+          "default": "error"
+        }
+      }
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["when", "goto"],
+      "properties": {
+        "when": { "$ref": "common.schema.json#/$defs/expression" },
+        "goto": { "$ref": "common.schema.json#/$defs/name" },
+        "max_visits": {
+          "description": "How many times the target stage may run within one run. Required for backward jumps (loops).",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        }
+      }
+    }
+  }
+}

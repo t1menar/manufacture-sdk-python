@@ -1,0 +1,10 @@
+# want: spec.stages[0].join.mode | value must be one of
+# want: spec.stages[0].parallel | minItems
+apiVersion: manufacture.dev/v1
+kind: Pipeline
+metadata: {name: enum}
+spec:
+  stages:
+    - name: one
+      parallel: [{module: a}]
+      join: {mode: some}

@@ -1,0 +1,36 @@
+# The acceptance pipeline: init -> "hello" -> " world" -> "!".
+apiVersion: manufacture.dev/v1
+kind: Module
+metadata: {name: hello-init}
+spec: {image: localhost:5001/mf-hello-init:0.1.0, replicas: 1}
+---
+apiVersion: manufacture.dev/v1
+kind: Module
+metadata: {name: hello-hello}
+spec: {image: localhost:5001/mf-hello-hello:0.1.0, replicas: 2}
+---
+apiVersion: manufacture.dev/v1
+kind: Module
+metadata: {name: hello-world}
+spec: {image: localhost:5001/mf-hello-world:0.1.0, replicas: 1}
+---
+apiVersion: manufacture.dev/v1
+kind: Module
+metadata: {name: hello-exclaim}
+spec: {image: localhost:5001/mf-hello-exclaim:0.1.0, replicas: 1}
+---
+apiVersion: manufacture.dev/v1
+kind: Pipeline
+metadata: {name: hello-world}
+spec:
+  trigger: {source: hello-init}
+  concurrency: {max_runs: 10}
+  context:
+    schema: {type: object, properties: {text: {type: string}}, required: [text]}
+  stages:
+    - name: hello
+      step: {module: hello-hello, timeout: 30s, retry: {max_attempts: 3}}
+    - name: world
+      step: {module: hello-world, timeout: 30s}
+    - name: exclaim
+      step: {module: hello-exclaim, timeout: 30s}

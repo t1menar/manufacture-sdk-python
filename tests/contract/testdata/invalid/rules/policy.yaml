@@ -1,0 +1,14 @@
+# want: spec.defaults.lease | lease (5m) must be shorter than timeout (1m)
+# want: spec.stages[0].step.retry.initial | initial delay (1h) must not exceed max (1m)
+# want: spec.trigger.schedule | must have 5 fields
+# want: spec.context.schema | invalid JSON Schema
+apiVersion: manufacture.dev/v1
+kind: Pipeline
+metadata: {name: policy}
+spec:
+  trigger: {schedule: "* * *"}
+  context: {schema: {type: thing}}
+  defaults: {timeout: 1m, lease: 5m}
+  stages:
+    - name: a
+      step: {module: m, timeout: 2h, lease: 1m, retry: {initial: 1h, max: 1m}}

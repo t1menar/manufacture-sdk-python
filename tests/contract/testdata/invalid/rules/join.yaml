@@ -1,0 +1,18 @@
+# want: spec.stages[0].join | join.quorum is required
+# want: spec.stages[1].join.quorum | exceeds the number of parallel steps (2)
+# want: spec.stages[2].join.quorum | only when mode is "quorum"
+apiVersion: manufacture.dev/v1
+kind: Pipeline
+metadata: {name: joins}
+spec:
+  stages:
+    - name: a
+      parallel: [{module: x}, {module: y}]
+      join: {mode: quorum}
+    - name: b
+      parallel: [{id: x2, module: x}, {id: y2, module: y}]
+      join: {mode: quorum, quorum: 3}
+    - name: c
+      foreach: data.items
+      step: {module: x}
+      join: {quorum: 1}

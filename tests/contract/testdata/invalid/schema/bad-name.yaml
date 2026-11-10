@@ -1,0 +1,5 @@
+# want: metadata.name | must be a lowercase DNS label
+apiVersion: manufacture.dev/v1
+kind: Module
+metadata: {name: Hello_World}
+spec: {image: x/y:1}

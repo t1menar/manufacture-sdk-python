@@ -1,0 +1,5 @@
+# want: kind | unknown kind "Workflow"
+apiVersion: manufacture.dev/v1
+kind: Workflow
+metadata: {name: wf}
+spec: {}

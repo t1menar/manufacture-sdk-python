@@ -1,0 +1,5 @@
+# want: apiVersion | apiVersion must be "manufacture.dev/v1"
+apiVersion: manufacture.dev/v2
+kind: Module
+metadata: {name: m}
+spec: {image: x/y:1}

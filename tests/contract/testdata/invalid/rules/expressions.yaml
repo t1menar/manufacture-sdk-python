@@ -1,0 +1,19 @@
+# want: spec.stages[0].when | invalid expression
+# want: spec.stages[0].step.input.x | invalid expression
+# want: spec.stages[1].when | must evaluate to bool, got int
+# want: spec.stages[1].foreach | must evaluate to list, got string
+# want: spec.stages[2].step.input.x | undeclared reference to 'item'
+apiVersion: manufacture.dev/v1
+kind: Pipeline
+metadata: {name: exprs}
+spec:
+  stages:
+    - name: a
+      when: "data.x =="
+      step: {module: m, input: {x: "data.("}}
+    - name: b
+      when: "1 + 2"
+      foreach: "'abc'"
+      step: {module: m, input: {x: "item.value + index"}}
+    - name: c
+      step: {module: m, input: {x: "item"}}

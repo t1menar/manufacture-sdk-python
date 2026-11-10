@@ -1,0 +1,20 @@
+# want: spec.stages[1].routes[0].goto | stage "nowhere" is not defined
+# want: spec.stages[1].routes[1] | forms a loop; set max_visits
+# want: spec.stages[1].routes[2] | forms a loop; set max_visits
+apiVersion: manufacture.dev/v1
+kind: Pipeline
+metadata: {name: routes}
+spec:
+  stages:
+    - name: make
+      step: {module: maker}
+    - name: check
+      step: {module: checker}
+      routes:
+        - {when: "true", goto: nowhere}
+        - {when: "steps.check.output.ok == false", goto: make}
+        - {when: "attempt > 1", goto: check}
+    - name: ship
+      step: {module: shipper}
+      routes:
+        - {when: "false", goto: make, max_visits: 2}

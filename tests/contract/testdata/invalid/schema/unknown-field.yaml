@@ -1,0 +1,9 @@
+# want: spec.stages[0].step.modul | unknown field "modul"
+# want: spec.stages[0].step | missing property 'module'
+apiVersion: manufacture.dev/v1
+kind: Pipeline
+metadata: {name: typo}
+spec:
+  stages:
+    - name: one
+      step: {modul: m}

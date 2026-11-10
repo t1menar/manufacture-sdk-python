@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://manufacture.dev/schemas/envelope/v2/envelope.schema.json",
+  "title": "Manufacture message envelope v2",
+  "description": "Every message on the broker is one JSON envelope (UTF-8, at most 262144 bytes). The payload schema depends on type. Large values travel by reference (blob-ref.schema.json).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["message_id", "type", "schema_version", "occurred_at", "producer", "payload"],
+  "properties": {
+    "message_id": {
+      "description": "Stable id of the message; a retransmission keeps it. Consumers deduplicate on it.",
+      "$ref": "#/$defs/uuid"
+    },
+    "type": {
+      "enum": ["step.requested", "step.cancel", "source.trigger", "step.heartbeat", "step.succeeded", "step.failed", "run.requested", "module.online", "module.heartbeat", "module.offline"]
+    },
+    "schema_version": { "const": 2 },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "producer": {
+      "description": "\"core\" or \"module:<name>\". The broker user is checked against it.",
+      "type": "string",
+      "pattern": "^(core|module:[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)$"
+    },
+    "traceparent": {
+      "description": "W3C trace context of the span that produced the message.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"
+    },
+    "run_id": { "$ref": "#/$defs/uuid" },
+    "attempt": { "$ref": "#/$defs/attemptRef" },
+    "payload": { "type": "object" }
+  },
+  "allOf": [
+    { "if": { "$ref": "#/$defs/isStepMessage" }, "then": { "required": ["run_id", "attempt"] } },
+    { "if": { "properties": { "type": { "const": "step.requested" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/stepRequested" } } } },
+    { "if": { "properties": { "type": { "const": "step.cancel" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/stepCancel" } } } },
+    { "if": { "properties": { "type": { "const": "source.trigger" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/sourceTrigger" } } } },
+    { "if": { "properties": { "type": { "const": "step.heartbeat" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/stepHeartbeat" } } } },
+    { "if": { "properties": { "type": { "const": "step.succeeded" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/stepSucceeded" } } } },
+    { "if": { "properties": { "type": { "const": "step.failed" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/stepFailed" } } } },
+    { "if": { "properties": { "type": { "const": "run.requested" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/runRequested" } } } },
+    { "if": { "properties": { "type": { "const": "module.online" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/moduleOnline" } } } },
+    { "if": { "properties": { "type": { "const": "module.heartbeat" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/moduleHeartbeat" } } } },
+    { "if": { "properties": { "type": { "const": "module.offline" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/moduleOffline" } } } }
+  ],
+  "$defs": {
+    "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+    "name": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" },
+    "isStepMessage": {
+      "properties": { "type": { "enum": ["step.requested", "step.cancel", "step.heartbeat", "step.succeeded", "step.failed"] } }
+    },
+    "attemptRef": {
+      "description": "One attempt of one step. id is unique per attempt: a result for an attempt that is no longer current is ignored by the core.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "number"],
+      "properties": {
+        "id": { "$ref": "#/$defs/uuid" },
+        "number": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "stepRequested": {
+      "description": "core -> module work queue: run the step handler.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pipeline", "revision", "stage", "step", "input", "deadline", "lease_seconds", "blob_prefix"],
+      "properties": {
+        "pipeline": { "$ref": "#/$defs/name" },
+        "revision": { "type": "integer", "minimum": 1 },
+        "stage": { "$ref": "#/$defs/name" },
+        "step": { "$ref": "#/$defs/name" },
+        "item_index": { "description": "Position of the item in a foreach stage.", "type": "integer", "minimum": 0 },
+        "input": { "description": "Run data, or the step input projection when the step declares one.", "type": "object" },
+        "config": { "description": "Module config merged with step config.", "type": "object" },
+        "deadline": { "description": "The attempt times out at this instant.", "type": "string", "format": "date-time" },
+        "lease_seconds": { "description": "Send step.heartbeat at least this often, or the attempt is considered lost.", "type": "integer", "minimum": 1 },
+        "blob_prefix": { "description": "Where the module may write blobs: s3://bucket/runs/<run>/<step>/<attempt>/", "type": "string", "pattern": "^s3://" }
+      }
+    },
+    "stepCancel": {
+      "description": "core -> every replica of the module (control exchange): stop the attempt if it runs here.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason"],
+      "properties": {
+        "reason": { "enum": ["timeout", "lost", "cancelled", "superseded"] }
+      }
+    },
+    "sourceTrigger": {
+      "description": "core -> source module work queue: emit runs now (manual start, schedule).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pipeline", "trigger_id"],
+      "properties": {
+        "pipeline": { "$ref": "#/$defs/name" },
+        "trigger_id": { "$ref": "#/$defs/uuid" },
+        "data": { "type": "object" }
+      }
+    },
+    "stepHeartbeat": {
+      "description": "module -> core: the attempt is alive; extends the lease.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "progress": { "type": "number", "minimum": 0, "maximum": 1 },
+        "message": { "type": "string", "maxLength": 1024 },
+        "replica_id": { "type": "string", "maxLength": 128 }
+      }
+    },
+    "stepSucceeded": {
+      "description": "module -> core: the attempt finished. With merge: data the output is applied to run data as a JSON Merge Patch (RFC 7396).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["output"],
+      "properties": {
+        "output": { "type": "object" },
+        "replica_id": { "type": "string", "maxLength": 128 },
+        "duration_ms": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "stepFailed": {
+      "description": "module -> core: the attempt failed. transient may be retried, fatal fails the step, attention parks the run for an operator.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["class", "message"],
+      "properties": {
+        "class": { "enum": ["transient", "fatal", "attention"] },
+        "code": { "type": "string", "maxLength": 128 },
+        "message": { "type": "string", "maxLength": 4096 },
+        "retry_after_seconds": { "type": "integer", "minimum": 0 },
+        "replica_id": { "type": "string", "maxLength": 128 },
+        "duration_ms": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "runRequested": {
+      "description": "source module -> core: start a run. dedup_key makes the request idempotent per pipeline.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pipeline", "data"],
+      "properties": {
+        "pipeline": { "$ref": "#/$defs/name" },
+        "dedup_key": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "trigger_id": { "$ref": "#/$defs/uuid" },
+        "data": { "type": "object" }
+      }
+    },
+    "moduleOnline": {
+      "description": "module -> core when a replica connects. The core checks contract compatibility (major version).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module", "replica_id", "contract_version", "sdk"],
+      "properties": {
+        "module": { "$ref": "#/$defs/name" },
+        "replica_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "contract_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "sdk": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "version"],
+          "properties": {
+            "name": { "type": "string", "maxLength": 64 },
+            "version": { "type": "string", "maxLength": 64 }
+          }
+        },
+        "version": { "description": "Version of the module code.", "type": "string", "maxLength": 64 },
+        "concurrency": { "type": "integer", "minimum": 1 },
+        "kinds": { "description": "Handlers the module implements.", "type": "array", "items": { "enum": ["step", "source"] }, "uniqueItems": true },
+        "input_schema": { "type": "object" },
+        "output_schema": { "type": "object" }
+      }
+    },
+    "moduleHeartbeat": {
+      "description": "module -> core every 10 s per replica.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module", "replica_id"],
+      "properties": {
+        "module": { "$ref": "#/$defs/name" },
+        "replica_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "in_flight": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "moduleOffline": {
+      "description": "module -> core on graceful shutdown.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module", "replica_id"],
+      "properties": {
+        "module": { "$ref": "#/$defs/name" },
+        "replica_id": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    }
+  }
+}
