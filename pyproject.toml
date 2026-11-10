@@ -25,8 +25,13 @@ dependencies = [
   "typing-extensions>=4.12",
 ]
 
+[project.optional-dependencies]
+# YAML specs for manufacture.fakecore (JSON files and dicts need nothing extra).
+fakecore = ["pyyaml>=6.0.2"]
+
 [project.scripts]
 mf-module = "manufacture.cli:main"
+mf-fakecore = "manufacture.fakecore.cli:main"
 
 [project.urls]
 Repository = "https://github.com/t1menar/manufacture-sdk-python"

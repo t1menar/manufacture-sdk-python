@@ -26,11 +26,13 @@ def load_module(target: str) -> Module[Any]:
     attr = attr or "app"
     if ref.endswith(".py"):
         path = Path(ref).resolve()
-        spec = importlib.util.spec_from_file_location(path.stem, path)
+        # Several modules of one repo are often all called main.py: keep each one importable.
+        name = path.stem if path.stem not in sys.modules else f"{path.stem}_{abs(hash(path))}"
+        spec = importlib.util.spec_from_file_location(name, path)
         if spec is None or spec.loader is None:
             raise SystemExit(f"cannot import {path}")
         mod = importlib.util.module_from_spec(spec)
-        sys.modules[path.stem] = mod
+        sys.modules[name] = mod
         sys.path.insert(0, str(path.parent))
         spec.loader.exec_module(mod)
     else:
