@@ -1,0 +1,96 @@
+[project]
+name = "manufacture-sdk"
+dynamic = ["version"]
+description = "Python SDK for Manufacture pipeline modules"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "t1menar" }]
+requires-python = ">=3.12"
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Framework :: AsyncIO",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Typing :: Typed",
+]
+dependencies = [
+  "jsonschema>=4.23",
+  "referencing>=0.35",
+]
+
+[project.urls]
+Repository = "https://github.com/t1menar/manufacture-sdk-python"
+Contract = "https://github.com/t1menar/manufacture-core/tree/main/schemas"
+
+[dependency-groups]
+dev = [
+  "mypy>=1.18",
+  "pytest>=8.4",
+  "pytest-asyncio>=1.2",
+  "pyyaml>=6.0.2",
+  "ruff>=0.14",
+  "types-jsonschema>=4.23",
+  "types-pyyaml>=6.0.12",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/manufacture/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/manufacture"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/manufacture", "tests", "scripts", "docs", "README.md", "LICENSE", "Makefile"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = [
+  "E", "W", "F", "I", "B", "UP", "N", "S", "C4", "SIM", "RUF", "PT", "ASYNC",
+  "BLE", "T20", "RET", "PL", "TRY", "PERF", "ANN", "TC",
+]
+ignore = [
+  "PLR0913",  # explicit keyword-only APIs are clearer than parameter objects here
+  "TRY003",   # messages are part of the error contract
+  "PLR2004",  # magic values in tests and protocol constants
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["manufacture", "contract_sync"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "ANN", "PLR2004", "S310", "T20"]
+"scripts/**" = ["T20", "S310"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+files = ["src", "tests", "scripts"]
+warn_unreachable = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["scripts"]
+addopts = ["-ra", "--strict-markers", "--strict-config"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+xfail_strict = true
+filterwarnings = ["error"]
+markers = [
+  "contract_online: fetches the pinned core commit from GitHub (enable with MF_CONTRACT_ONLINE=1)",
+]

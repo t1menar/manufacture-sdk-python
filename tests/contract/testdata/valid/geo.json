@@ -1,0 +1,29 @@
+{
+  "apiVersion": "manufacture.dev/v1",
+  "kind": "Pipeline",
+  "metadata": {"name": "geo-analysis"},
+  "spec": {
+    "trigger": {"schedule": "0 3 * * 1-5"},
+    "stages": [
+      {"name": "ingest", "step": {"module": "geo-ingest"}},
+      {"name": "tiles", "step": {"module": "geo-split", "merge": "none"}},
+      {
+        "name": "analyze-tiles",
+        "foreach": "steps.tiles.output.tiles",
+        "max_parallel": 16,
+        "join": {"mode": "quorum", "quorum": 1, "merge": "array_append"},
+        "step": {"module": "geo-analyze", "input": {"tile": "item", "n": "index"}, "when": "item.size > 0"}
+      },
+      {
+        "name": "layers",
+        "parallel": [
+          {"module": "geo-ndvi"},
+          {"module": "geo-roads", "optional": true},
+          {"id": "buildings-v2", "module": "geo-buildings", "config": {"model": "v2"}}
+        ],
+        "join": {"mode": "all", "merge": "error"}
+      },
+      {"name": "report", "when": "size(data.layers) > 0", "step": {"module": "geo-report"}}
+    ]
+  }
+}

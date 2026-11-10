@@ -1,0 +1,41 @@
+name: contract-nightly
+
+# Reports (does not fail) when manufacture-core main moved away from the vendored contract.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: core ref to compare with
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  drift-vs-core-main:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: compare with core
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REF: ${{ inputs.ref || 'main' }}
+        run: |
+          set +e
+          python3 scripts/contract_sync.py --check --ref "$REF" | tee report.txt
+          status=${PIPESTATUS[0]}
+          {
+            echo "## Contract vs manufacture-core@$REF"
+            echo '```'
+            cat report.txt
+            echo '```'
+            if [ "$status" -ne 0 ]; then
+              echo "Update with \`make contract-sync REF=<sha>\` in a separate PR."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ]; then
+            echo "::warning title=contract drift::vendored contract differs from manufacture-core@$REF"
+          fi
+          exit 0

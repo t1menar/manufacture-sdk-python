@@ -1,0 +1,22 @@
+# want: spec | image is required unless runtime is "external"
+# want: spec.env.MF_TOKEN | reserved for the core and the SDK
+# want: spec.secrets[0].env | already set by env
+---
+apiVersion: manufacture.dev/v1
+kind: Module
+metadata: {name: no-image}
+spec:
+  env: {MF_TOKEN: x, API_KEY: y}
+  secrets:
+    - {env: API_KEY, secretRef: {name: s, key: k}}
+---
+# want: spec.image | is not a valid image reference
+# want: spec.replicas | min (3) must not exceed max (2)
+# want: spec.replicas | autoscaling needs runtime "auto"
+apiVersion: manufacture.dev/v1
+kind: Module
+metadata: {name: bad-image}
+spec:
+  runtime: external
+  image: "UPPER/Case:1"
+  replicas: {min: 3, max: 2}

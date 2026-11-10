@@ -1,0 +1,16 @@
+# want: spec.stages[1].name | stage "one" is already defined at spec.stages[0]
+# want: spec.stages[2].parallel[1] | step id "a" is already used at spec.stages[2].parallel[0]
+# want: spec.stages[3].step | step id "one" is already used at spec.stages[0].step
+apiVersion: manufacture.dev/v1
+kind: Pipeline
+metadata: {name: ids}
+spec:
+  stages:
+    - name: one
+      step: {module: a}
+    - name: one
+      step: {module: b}
+    - name: par
+      parallel: [{module: a}, {module: a}]
+    - name: three
+      step: {id: one, module: c}

@@ -1,0 +1,8 @@
+# want: spec.stages[0].step.timeout | must be a duration
+apiVersion: manufacture.dev/v1
+kind: Pipeline
+metadata: {name: dur}
+spec:
+  stages:
+    - name: one
+      step: {module: m, timeout: 1.5h}

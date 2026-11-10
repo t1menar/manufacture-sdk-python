@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://manufacture.dev/schemas/v1/common.schema.json",
+  "title": "Manufacture v1: shared definitions",
+  "$defs": {
+    "name": {
+      "description": "Resource or stage name: lowercase DNS label (RFC 1123), 1-63 characters.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+    },
+    "duration": {
+      "description": "Duration as a sequence of <integer><unit>, units ms, s, m, h, d. Example: 1h30m, 7d.",
+      "type": "string",
+      "pattern": "^([0-9]+(ms|s|m|h|d))+$"
+    },
+    "expression": {
+      "description": "CEL expression evaluated by the core.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "envName": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+    },
+    "stringMap": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "$ref": "#/$defs/name" },
+        "labels": { "$ref": "#/$defs/stringMap" },
+        "annotations": { "$ref": "#/$defs/stringMap" }
+      }
+    }
+  }
+}

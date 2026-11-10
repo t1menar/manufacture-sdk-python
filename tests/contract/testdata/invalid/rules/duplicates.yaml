@@ -1,0 +1,10 @@
+# want: metadata.name | Module/m is defined twice
+apiVersion: manufacture.dev/v1
+kind: Module
+metadata: {name: m}
+spec: {image: x/m:1}
+---
+apiVersion: manufacture.dev/v1
+kind: Module
+metadata: {name: m}
+spec: {image: x/m:2}

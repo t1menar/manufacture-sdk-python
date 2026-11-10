@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://manufacture.dev/schemas/v1/module.schema.json",
+  "title": "Manufacture v1: Module",
+  "description": "A module is a container image that handles pipeline steps. The core runs it through the configured runtime driver.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": { "const": "manufacture.dev/v1" },
+    "kind": { "const": "Module" },
+    "metadata": { "$ref": "common.schema.json#/$defs/metadata" },
+    "spec": { "$ref": "#/$defs/moduleSpec" }
+  },
+  "$defs": {
+    "moduleSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "image": {
+          "description": "OCI image reference. Required unless runtime is external. Pin by digest in production.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "runtime": {
+          "description": "auto: the core starts the module through its runtime driver; external: the module is started elsewhere and connects by itself.",
+          "enum": ["auto", "external"],
+          "default": "auto"
+        },
+        "replicas": {
+          "description": "Fixed replica count, or an autoscaling range.",
+          "type": ["integer", "object"],
+          "minimum": 0,
+          "maximum": 1000,
+          "additionalProperties": false,
+          "required": ["min", "max"],
+          "properties": {
+            "min": { "type": "integer", "minimum": 0, "maximum": 1000 },
+            "max": { "type": "integer", "minimum": 1, "maximum": 1000 },
+            "metric": { "enum": ["queue_depth", "cpu"], "default": "queue_depth" },
+            "target": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "concurrency": {
+          "description": "Steps processed in parallel by one replica (broker prefetch).",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1024,
+          "default": 1
+        },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cpu": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?m?$" },
+            "memory": { "type": "string", "pattern": "^[0-9]+(Ki|Mi|Gi|Ti|K|M|G|T)?$" }
+          }
+        },
+        "env": {
+          "type": "object",
+          "propertyNames": { "$ref": "common.schema.json#/$defs/envName" },
+          "additionalProperties": { "type": "string" }
+        },
+        "secrets": {
+          "description": "Environment variables filled from secrets. Values never appear in the spec.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["env", "secretRef"],
+            "properties": {
+              "env": { "$ref": "common.schema.json#/$defs/envName" },
+              "secretRef": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "key"],
+                "properties": {
+                  "name": { "$ref": "common.schema.json#/$defs/name" },
+                  "key": { "type": "string", "minLength": 1, "maxLength": 253 }
+                }
+              }
+            }
+          }
+        },
+        "config": {
+          "description": "Module-level configuration passed with every step; steps may override keys.",
+          "type": "object"
+        }
+      }
+    }
+  }
+}

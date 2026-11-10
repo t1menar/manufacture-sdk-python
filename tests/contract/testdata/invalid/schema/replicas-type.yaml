@@ -1,0 +1,6 @@
+# want: spec.replicas | missing property 'max'
+# want: spec.concurrency | minimum
+apiVersion: manufacture.dev/v1
+kind: Module
+metadata: {name: m}
+spec: {image: x/y:1, replicas: {min: 1}, concurrency: 0}
