@@ -52,7 +52,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv sync --locked
-      - name: drift test (pinned commit)
+      - name: drift test (pinned contract release)
         env:
           MF_CONTRACT_ONLINE: "1"
           GITHUB_TOKEN: ${{ github.token }}
@@ -71,4 +71,5 @@ jobs:
           unzip -l dist/*.whl | tee /tmp/wheel.txt
           grep -q 'manufacture/py.typed' /tmp/wheel.txt
           grep -q 'manufacture/_contract/schemas/v1/module.schema.json' /tmp/wheel.txt
+          grep -q 'manufacture/_contract/schemas/envelope/v2/envelope.schema.json' /tmp/wheel.txt
           grep -q 'manufacture/_contract/contract.lock.json' /tmp/wheel.txt

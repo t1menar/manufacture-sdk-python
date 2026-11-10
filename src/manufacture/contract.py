@@ -30,11 +30,13 @@ __all__ = [
     "SpecError",
     "check_resource",
     "schema",
+    "validate_envelope",
     "validate_resource",
 ]
 
 API_VERSION: Final = "manufacture.dev/v1"
 SCHEMA_BASE: Final = "https://manufacture.dev/schemas/"
+ENVELOPE_SCHEMA: Final = "envelope/v2/envelope.schema.json"
 KINDS: Final[Mapping[str, str]] = {
     "Module": "v1/module.schema.json",
     "Pipeline": "v1/pipeline.schema.json",
@@ -128,3 +130,9 @@ def check_resource(doc: Mapping[str, Any]) -> None:
     """Like :func:`validate_resource`, but raises :class:`SpecError` on violations."""
     if errors := validate_resource(doc):
         raise SpecError(errors)
+
+
+def validate_envelope(doc: Mapping[str, Any]) -> list[ResourceError]:
+    """Validate a broker message (envelope v2 and its typed payload) against the contract."""
+    errors = {e for err in _validator(ENVELOPE_SCHEMA).iter_errors(doc) for e in _flatten(err)}
+    return sorted(errors, key=lambda e: (e.path, e.message))

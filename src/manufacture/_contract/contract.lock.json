@@ -1,22 +1,49 @@
 {
   "repository": "t1menar/manufacture-core",
-  "commit": "ce6e1f754b2ab1173d77ab3b501495cc20e3fb3e",
-  "version": "0.1.0",
+  "release": "contract-v0.2.1",
+  "archive_sha256": "a121f219a14a2c71c5c542aa054c0f27d21cf76b31b2aa92ba7e705fc47744b6",
+  "commit": "3299ffe51c7c00de2f2526ebdb95d0da3c1d00b8",
+  "version": "0.2.1",
   "include": [
     "schemas/VERSION",
     "schemas/v1/",
-    "testdata/"
+    "schemas/envelope/v2/",
+    "testdata/",
+    "messaging.md"
   ],
   "mappings": {
     "schemas/": "src/manufacture/_contract/schemas/",
-    "testdata/": "tests/contract/testdata/"
+    "testdata/": "tests/contract/testdata/",
+    "messaging.md": "docs/contract/messaging.md"
+  },
+  "repo_paths": {
+    "messaging.md": "docs/messaging.md"
   },
   "files": {
-    "schemas/VERSION": "e9dd8507f4bf0c6f42458e41aea833ad0bd3f6127272335eee9bf4d58541ed67",
+    "messaging.md": "52e89a825caecc43d393682be5cc98b4f32ca3f12c6192f8fc1676c5721d3eec",
+    "schemas/VERSION": "71015c979ccb0fc8a0be7ca0ae83046ab045cdc2c8faa09fb2f0f7e440f9b4a6",
+    "schemas/envelope/v2/blob-ref.schema.json": "0ca5003fb11351ca9bd5ae89ce126f8bc204f1f3ab48710dd35b490b01530b02",
+    "schemas/envelope/v2/envelope.schema.json": "a99890edaac7f1a279fe3d1ffbf870bdbb2410b4c8f8d7573095235ff32f40a0",
     "schemas/v1/common.schema.json": "59590b60ee39077ab988f5777272e92dae91350e8ec9a2ec62f7d5d2f7975edb",
     "schemas/v1/module.schema.json": "b376e61fd4782784f29eda1f9669000569c32b1e1361a349413f701520630847",
     "schemas/v1/pipeline.schema.json": "0d91de921d8614a4afaad43456e62ecf21fd4f957c35c7b9e012f6f5f72d7604",
-    "testdata/README.md": "c3f608cde42596a21caac747483e15945a09e4b8961dcfe1b281c5592e53225f",
+    "testdata/envelope/invalid/bad-blob-ref.json": "820712b7e2c1f24af20a369928212905b4a39f4964de1a2d7f04155dae51ecda",
+    "testdata/envelope/invalid/bad-class.json": "f9fa43e00122b212ac6186c4b33a01cb0557c96fef56da83084605b0a41f49d3",
+    "testdata/envelope/invalid/bad-producer.json": "2e8730e767ac190be9c107c7896bdd2257727add4589805889a19f2bdef867b2",
+    "testdata/envelope/invalid/step-without-attempt.json": "a403d078a57d9f860a76126c1c9acf2b78deb8632de9624534b3ac821ec27dc6",
+    "testdata/envelope/invalid/unknown-payload-field.json": "cc7d8f9038d2f603fb06fd90870dc6362134c84be3169ef0c369118b9b51672f",
+    "testdata/envelope/invalid/unknown-type.json": "5cf1a7b256ca7dbf6e3cb0d48490eb36548f3b016d6bc6a0d1fc699330f63bf8",
+    "testdata/envelope/invalid/wrong-version.json": "de36fabafe2099ed85d297cf9907a905e6079b667b7864a5a302f2784bb95941",
+    "testdata/envelope/valid/module-heartbeat.json": "c2c44290b4554f6b6ac188533179cbf5d1dcb1a68d341088e56e77b561e03c2e",
+    "testdata/envelope/valid/module-offline.json": "444421895a092a9c12f740d2fa235afda578265017688fb045f56a1c4cb5029c",
+    "testdata/envelope/valid/module-online.json": "564998704db2d0bdbde24d80f7118323d514383e62c27f48959511ecc837e712",
+    "testdata/envelope/valid/run-requested.json": "fa1645745b43862d5c08b09a1850f18ee5b02b64aab4b425c33b7d44374b812c",
+    "testdata/envelope/valid/source-trigger.json": "2a83335d81e8e546ccc172b5970769c521688bcd72f1ebce68b5eff1da3011dd",
+    "testdata/envelope/valid/step-cancel.json": "2dfd193cb4273257a2737cc6ea0e0b1f76facbda5e77f2f5c69758bcb36bafca",
+    "testdata/envelope/valid/step-failed.json": "e9c71c908734f9a6ed7993b05d19b332ec0a339eac7b4a6f5a29f01b9c44d78b",
+    "testdata/envelope/valid/step-heartbeat.json": "92911cf632a35aa02890556a917d61f2d8a4b131b113d515442c7972a434f3dc",
+    "testdata/envelope/valid/step-requested.json": "9e8f73a50952aa258da82a84c55f4745024274fd1da4a8987ed45643f4980b74",
+    "testdata/envelope/valid/step-succeeded.json": "0cc21a22bed52d9b1113dae711cb80d109a491f6581af7294be08e5daecca14f",
     "testdata/invalid/rules/duplicates.yaml": "7cb3bc9dfad3b43a6dea3dc3adabb4b82d3e74580916bc9418718c048006025e",
     "testdata/invalid/rules/expressions.yaml": "1a70708f26a8ae65947cbb0a2165ab7c2334b5ed472a312e66ca60eb2b7a0983",
     "testdata/invalid/rules/ids.yaml": "7088247be19c9a16db77cfb4e06d4250393d314a1acb3691e34ec3beea4ad62f",

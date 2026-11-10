@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://manufacture.dev/schemas/envelope/v2/blob-ref.schema.json",
+  "title": "Blob reference (claim check)",
+  "description": "A value stored in object storage instead of inline. Any object in input, output or run data that has the $blob key is a reference. The key is $blob, not $ref, so data never looks like a JSON Reference.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$blob", "size"],
+  "properties": {
+    "$blob": { "type": "string", "pattern": "^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/.+" },
+    "size": { "type": "integer", "minimum": 0 },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "content_type": { "type": "string", "maxLength": 255 }
+  }
+}

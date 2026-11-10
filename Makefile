@@ -1,5 +1,6 @@
 # manufacture-sdk-python. Run `make help` for the targets.
 UV  ?= uv
+RELEASE ?=
 REF ?=
 
 .DEFAULT_GOAL := help
@@ -30,11 +31,11 @@ test-online: ## tests incl. the drift test against GitHub
 
 check: lint typecheck test ## everything CI runs offline
 
-contract-sync: ## vendor the contract: make contract-sync REF=<core commit sha>
-	@test -n "$(REF)" || (echo "usage: make contract-sync REF=<core commit sha>" && exit 2)
-	python3 scripts/contract_sync.py --ref $(REF)
+contract-sync: ## vendor a contract release: make contract-sync RELEASE=contract-vX.Y.Z
+	@test -n "$(RELEASE)" || (echo "usage: make contract-sync RELEASE=contract-vX.Y.Z" && exit 2)
+	python3 scripts/contract_sync.py --release $(RELEASE)
 
-contract-check: ## compare the vendored contract with the pinned commit (REF= to compare with another)
+contract-check: ## compare with the pinned release (REF=main to compare with a core branch)
 	python3 scripts/contract_sync.py --check $(if $(REF),--ref $(REF),)
 
 build: ## build wheel and sdist into dist/

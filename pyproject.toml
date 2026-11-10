@@ -63,6 +63,7 @@ ignore = [
   "PLR0913",  # explicit keyword-only APIs are clearer than parameter objects here
   "TRY003",   # messages are part of the error contract
   "PLR2004",  # magic values in tests and protocol constants
+  "E501",     # the formatter owns line length
 ]
 
 [tool.ruff.lint.isort]

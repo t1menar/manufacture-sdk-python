@@ -1,45 +1,45 @@
-# ADR 0002: Vendored contract pinned to a core commit, with a drift test
+# ADR 0002: Vendored contract pinned to a core contract release, with a drift test
 
-Status: accepted (S1), 2026-11-10
+Status: accepted (S1), 2026-11-10; revised for contract 0.2.1 the same day
 
 ## Context
-`manufacture-core` owns the contract (`schemas/`). The architecture doc (§1.3) plans to
-vendor it from the `contract-vX.Y.Z.tar.gz` release asset. The core has no releases yet
-(C1 = `ce6e1f7`, contract `0.1.0`), and the message envelope schemas (C2) are not merged.
+`manufacture-core` owns the contract. On every tag `contract-vX.Y.Z` its CI publishes
+`contract-vX.Y.Z.tar.gz` (schemas, testdata, `messaging.md`, `openapi.yaml`, `CHANGELOG.md`)
+and `SHA256SUMS` on the GitHub release (architecture doc §1.3). The first S1 draft pinned a
+commit (`ce6e1f7`, contract 0.1.0) because no release existed; `contract-v0.2.1`
+(commit `3299ffe`) is the first release with the envelope schemas (C2).
 
 ## Decision
-- The SDK vendors core files at a **pinned full commit SHA**:
-  `schemas/VERSION` and `schemas/v1/` into `src/manufacture/_contract/schemas/` (shipped in
-  the wheel), `testdata/` into `tests/contract/testdata/` (tests only).
-- `src/manufacture/_contract/contract.lock.json` records the repository, commit, contract
-  version, the `include` list (core paths; a trailing `/` means the whole directory),
-  `mappings` (core prefix → local path) and the sha256 of every vendored file.
-- `scripts/contract_sync.py` (stdlib only) is the single writer: `make contract-sync
-  REF=<sha>` downloads the included paths from GitHub (tree API + raw files), rewrites the
-  vendored files and the lock. Each update is its own PR.
+- The SDK vendors a **contract release**:
+  `schemas/VERSION`, `schemas/v1/`, `schemas/envelope/v2/` into
+  `src/manufacture/_contract/schemas/` (shipped in the wheel), `testdata/` (resource specs
+  and the envelope conformance vectors `testdata/envelope/`) into `tests/contract/testdata/`,
+  and `messaging.md` into `docs/contract/messaging.md`.
+- `src/manufacture/_contract/contract.lock.json` records the repository, the release tag,
+  the archive sha256, the commit the tag points to, the contract version, the `include` list
+  (paths inside the archive; a trailing `/` means a whole directory), `mappings`
+  (archive prefix → local path), `repo_paths` (archive path → repository path where they
+  differ) and the sha256 of every vendored file.
+- `scripts/contract_sync.py` (stdlib only) is the single writer:
+  `make contract-sync RELEASE=contract-vX.Y.Z` downloads the archive, verifies it against
+  `SHA256SUMS`, extracts the included paths and rewrites the lock. Each update is its own PR.
 - Drift test (`tests/contract/test_drift.py`):
   - offline, always: every vendored file matches its lock hash, nothing untracked sits in
     the vendored directories, `VERSION` equals the lock version;
   - online (`MF_CONTRACT_ONLINE=1`, the `contract-drift` CI job): downloads the pinned
-    commit and compares byte by byte, including the file list.
-- Nightly workflow `contract-nightly` compares with core `main` and only reports
-  (job summary + warning), it never fails.
-- `tests/contract/test_testdata.py` runs core `testdata/` through the SDK validator:
-  `valid/` passes, `invalid/schema/` is rejected at the paths listed in `# want:`,
-  `invalid/rules/` is schema-valid (semantic rules belong to `manufacture validate`).
+    release, checks the archive checksum against `SHA256SUMS` and the lock (a re-published
+    release is drift too) and compares every file byte by byte, including the file list.
+- Nightly workflow `contract-nightly` compares with core `main` (`--check --ref main`) and
+  only reports (job summary + warning), it never fails.
+- Conformance: `tests/contract/test_testdata.py` runs the resource testdata through
+  `manufacture.contract.validate_resource`; `tests/contract/test_envelope_vectors.py` runs
+  `testdata/envelope/{valid,invalid}` through `validate_envelope`.
 
-## Adding the envelope schemas (C2) and other contract files
-Add the core path (for example `schemas/envelope/v2/`) to `include` in the lock file and
-run `make contract-sync REF=<sha of core main with C2>`. Everything else (hash check,
-online drift, wheel content) picks the new files up automatically.
-
-## Switch to release archives
-When the core publishes `contract-vX.Y.Z.tar.gz` with `SHA256SUMS`, the sync script gets a
-`--release vX.Y.Z` mode that verifies the archive checksum; the lock keeps both the tag and
-the commit it points to. Until then the commit pin is the source of truth.
+## Adding contract files
+Add the archive path to `include` (and `mappings` if it is a new top-level prefix), run
+`make contract-sync RELEASE=...`. Hash checks, online drift and the wheel pick it up.
 
 ## Consequences
 - The SDK never edits schemas; contract changes go through the core.
-- Pydantic models of `Module`/`Pipeline` resources are not part of S1: the SDK validates
-  resources with the JSON Schemas themselves, which keeps it identical to the core by
-  construction.
+- Pydantic models of `Module`/`Pipeline` resources are not part of S1: resources are
+  validated by the JSON Schemas themselves, identical to the core by construction.
