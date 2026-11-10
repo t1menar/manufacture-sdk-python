@@ -17,9 +17,16 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
+  "aio-pika>=9.5",
   "jsonschema>=4.23",
+  "pydantic>=2.9",
+  "pydantic-settings>=2.6",
   "referencing>=0.35",
+  "typing-extensions>=4.12",
 ]
+
+[project.scripts]
+mf-module = "manufacture.cli:main"
 
 [project.urls]
 Repository = "https://github.com/t1menar/manufacture-sdk-python"
@@ -63,6 +70,12 @@ ignore = [
   "PLR0913",  # explicit keyword-only APIs are clearer than parameter objects here
   "TRY003",   # messages are part of the error contract
   "PLR2004",  # magic values in tests and protocol constants
+  "PLR0911",  # outcome mapping reads best as early returns
+  "N818",     # Transient/Fatal/NeedsAttention are the names from the architecture doc
+  "TRY301",   # raise-inside-try is used to funnel validation into one handler
+  "TRY400",   # expected failures are logged without tracebacks on purpose
+  "UP046",    # Generic[...] kept: PEP 695 syntax has no TypeVar defaults before 3.13
+  "ASYNC109", # test helpers take explicit timeouts
   "E501",     # the formatter owns line length
 ]
 
@@ -70,7 +83,7 @@ ignore = [
 known-first-party = ["manufacture", "contract_sync"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "ANN", "PLR2004", "S310", "T20"]
+"tests/**" = ["S101", "ANN", "PLR2004", "S310", "T20", "TC001", "TC002", "TC003", "PLC0415", "PT018", "S104", "ASYNC110"]
 "scripts/**" = ["T20", "S310"]
 
 [tool.ruff.format]
@@ -81,6 +94,7 @@ strict = true
 python_version = "3.12"
 files = ["src", "tests", "scripts"]
 warn_unreachable = true
+plugins = ["pydantic.mypy"]
 enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
 
 [tool.pytest.ini_options]
@@ -93,5 +107,10 @@ asyncio_default_fixture_loop_scope = "function"
 xfail_strict = true
 filterwarnings = ["error"]
 markers = [
+  "integration: needs a RabbitMQ broker (enable with MF_TEST_AMQP_URL=amqp://...)",
   "contract_online: fetches the pinned core commit from GitHub (enable with MF_CONTRACT_ONLINE=1)",
 ]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
