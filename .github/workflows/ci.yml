@@ -43,6 +43,27 @@ jobs:
       - name: pytest
         run: uv run pytest
 
+  integration:
+    # Runtime against a real RabbitMQ; the tests play the core (exchanges, commands, events).
+    runs-on: ubuntu-latest
+    services:
+      rabbitmq:
+        image: rabbitmq:4-management
+        ports: ["5672:5672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q check_port_connectivity"
+          --health-interval 5s --health-timeout 10s --health-retries 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - name: pytest -m integration
+        env:
+          MF_TEST_AMQP_URL: amqp://guest:guest@127.0.0.1:5672/
+        run: uv run pytest tests/integration -m integration -v
+
   contract-drift:
     # Byte-compares the vendored contract with the pinned manufacture-core commit on GitHub.
     runs-on: ubuntu-latest
@@ -73,3 +94,8 @@ jobs:
           grep -q 'manufacture/_contract/schemas/v1/module.schema.json' /tmp/wheel.txt
           grep -q 'manufacture/_contract/schemas/envelope/v2/envelope.schema.json' /tmp/wheel.txt
           grep -q 'manufacture/_contract/contract.lock.json' /tmp/wheel.txt
+      - name: wheel installs and the CLI runs
+        run: |
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip install dist/*.whl
+          /tmp/venv/bin/mf-module --help
