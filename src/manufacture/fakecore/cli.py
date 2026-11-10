@@ -15,10 +15,14 @@ import argparse
 import asyncio
 import json
 import sys
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from manufacture.cli import load_module
 from manufacture.fakecore._engine import FakeCore
+
+if TYPE_CHECKING:
+    from manufacture.fakecore._model import Run
 
 __all__ = ["main"]
 
@@ -38,6 +42,11 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--runs", type=int, default=1, help="runs to wait for (default 1)")
     p.add_argument("--timeout", type=float, default=60.0, help="seconds to wait (default 60)")
     p.add_argument(
+        "-o",
+        "--output",
+        help="write the runs JSON to this file instead of stdout (modules may print)",
+    )
+    p.add_argument(
         "--no-module-schedules",
         action="store_true",
         help="do not run on_start/every sources of the modules",
@@ -45,7 +54,7 @@ def _parser() -> argparse.ArgumentParser:
     return p
 
 
-async def _main(args: argparse.Namespace) -> int:
+async def _main(args: argparse.Namespace) -> list[Run]:
     data: dict[str, Any] | None = json.loads(args.data) if args.data is not None else None
     modules = [load_module(t) for t in args.targets]
     async with FakeCore(
@@ -65,14 +74,19 @@ async def _main(args: argparse.Namespace) -> int:
             )
         else:
             runs = await core.wait_for_runs(count=args.runs, timeout=args.timeout)
-    print(json.dumps([r.to_dict() for r in runs], indent=2, ensure_ascii=False))  # noqa: T201
-    return 0 if all(r.status == "succeeded" for r in runs) else 1
+    return runs
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        return asyncio.run(_main(args))
+        runs = asyncio.run(_main(args))
     except TimeoutError as exc:
         print(f"mf-fakecore: {exc}", file=sys.stderr)  # noqa: T201
         return 2
+    text = json.dumps([r.to_dict() for r in runs], indent=2, ensure_ascii=False)
+    if args.output:
+        Path(args.output).write_text(text + "\n", encoding="utf-8")
+    else:
+        print(text)  # noqa: T201
+    return 0 if all(r.status == "succeeded" for r in runs) else 1

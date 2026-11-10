@@ -20,8 +20,8 @@ and speaks the real module protocol to real `Runtime`s.
 from manufacture.fakecore import FakeCore
 
 async with FakeCore("pipeline.yaml", [init.app, hello.app, world.app, exclaim.app]) as core:
-    run = await core.run("hello-world", {"text": ""})            # API path, 201
-    trigger_id = await core.trigger("hello-world")                # source.trigger, 202
+    run = await core.run("hello-world", {"text": ""})  # API path, 201
+    trigger_id = await core.trigger("hello-world")  # source.trigger, 202
     [run] = await core.wait_for_runs("hello-world", trigger_id=trigger_id)
 ```
 

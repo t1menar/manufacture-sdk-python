@@ -100,8 +100,12 @@ def test_trigger_and_failure_exit_code(
     project: tuple[Path, list[str]], capsys: pytest.CaptureFixture[str]
 ) -> None:
     spec, targets = project
-    assert main(["-f", str(spec), *targets, "--no-module-schedules", "--trigger", "p"]) == 0
-    capsys.readouterr()
+    out = spec.parent / "runs.json"
+    args = ["-f", str(spec), *targets, "--no-module-schedules", "--trigger", "p", "-o", str(out)]
+    assert main(args) == 0
+    assert capsys.readouterr().out == ""
+    [run] = json.loads(out.read_text(encoding="utf-8"))
+    assert run["trigger"]["kind"] == "source"
     # without module b's code the memory broker refuses to start
     with pytest.raises(ValueError, match="no code for: b"):
         main(["-f", str(spec), targets[0], targets[2], "--run", "p"])
