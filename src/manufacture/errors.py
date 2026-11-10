@@ -2,11 +2,35 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import ClassVar
 
 from manufacture._wire import ErrorClass
 
-__all__ = ["ErrorClass", "Fatal", "NeedsAttention", "StepError", "Transient"]
+__all__ = ["ErrorClass", "ErrorCode", "Fatal", "NeedsAttention", "StepError", "Transient"]
+
+
+class ErrorCode(StrEnum):
+    """``step.failed.code`` values the SDK itself reports.
+
+    Handlers may use any other ``snake_case`` code. ``MODULE_SHUTDOWN`` is reserved by the
+    core (answer to ADR 0003 Q6): the replica stopped before the step finished, retry at once.
+    """
+
+    MODULE_SHUTDOWN = "module_shutdown"
+    """transient: SIGTERM and the shutdown grace period ran out."""
+    UNHANDLED = "unhandled"
+    """transient: the handler raised an exception that is not a :class:`StepError`."""
+    CANCELLED = "cancelled"
+    """transient: the handler cancelled itself (not a ``step.cancel`` from the core)."""
+    INPUT_INVALID = "input_invalid"
+    """fatal: ``payload.input`` does not match the step's input model."""
+    OUTPUT_INVALID = "output_invalid"
+    """fatal: the handler returned a value that does not match the output model."""
+    CONFIG_INVALID = "config_invalid"
+    """fatal: ``ctx.config_as(Model)`` failed."""
+    NO_STEP_HANDLER = "no_step_handler"
+    """fatal: ``step.requested`` reached a module without ``@app.step``."""
 
 
 class StepError(Exception):

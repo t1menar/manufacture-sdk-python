@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 import inspect
 import re
-from collections.abc import AsyncIterator, Callable, Coroutine
+from collections.abc import AsyncIterator, Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final, Generic, Literal, TypeVar, cast, overload
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from manufacture._contract import CONTRACT_VERSION
 from manufacture._version import __version__
@@ -61,10 +61,26 @@ class RunRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     data: dict[str, Any] = Field(default_factory=dict)
+    """Initial run data; must be JSON-serializable. Read-only views such as ``ctx.data``
+    and ``ctx.config`` may be passed, at any depth: they are copied into plain dicts."""
     dedup_key: str | None = Field(default=None, min_length=1, max_length=256)
     """Business key; the core starts at most one run per key. Default: per trigger + index."""
     pipeline: str | None = None
     """Overrides the pipeline of the source declaration."""
+
+    @field_validator("data", mode="before")
+    @classmethod
+    def _plain_data(cls, value: object) -> object:
+        return _plain(value)
+
+
+def _plain(value: object) -> object:
+    """Copy nested mappings (``MappingProxyType`` included) into dicts, lists stay lists."""
+    if isinstance(value, Mapping):
+        return {k: _plain(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_plain(v) for v in value]
+    return value
 
 
 StepHandler = Callable[[Context[_S], InT], Coroutine[Any, Any, OutT]]
@@ -200,9 +216,12 @@ class Module(Generic[S]):
     ) -> Callable[[SourceHandler[S]], SourceHandler[S]]:
         """Register a source: an async generator yielding :class:`RunRequest`.
 
-        It runs on ``source.trigger`` from the core (UI button, schedule, ``mfctl run``),
-        once per replica start when ``on_start`` is true, and every ``every`` (``"2h"``,
-        seconds, timedelta) in each replica.
+        It runs on ``source.trigger`` from the core (UI button, schedule, ``mfctl run``).
+
+        ``on_start`` (once per replica start) and ``every`` (``"2h"``, seconds, timedelta;
+        in each replica) are **temporary**: they run in every replica, so with several
+        replicas they start several runs. Schedules are moving to the core, which will send
+        ``source.trigger``; then both options will be removed. A warning is logged at start.
         """
         every_s = parse_duration(every) if every is not None else None
 

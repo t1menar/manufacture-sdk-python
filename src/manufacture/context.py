@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 from pydantic import BaseModel, SecretStr, ValidationError
 from typing_extensions import TypeVar as TypeVarWithDefault
 
-from manufacture.errors import Fatal
+from manufacture.errors import ErrorCode, Fatal
 
 if TYPE_CHECKING:
     from manufacture._log import StructLogger
@@ -126,7 +126,7 @@ class Context(Generic[S]):
             return model.model_validate(dict(self.config))
         except ValidationError as exc:
             raise Fatal(
-                f"invalid step config: {exc.error_count()} error(s)", code="config_invalid"
+                f"invalid step config: {exc.error_count()} error(s)", code=ErrorCode.CONFIG_INVALID
             ) from exc
 
 

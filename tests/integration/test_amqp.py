@@ -170,3 +170,30 @@ async def test_missing_core_exchanges_fail_fast(topology: wire.Topology) -> None
     with pytest.raises(Exception, match=r"NOT_FOUND|not found"):
         await runtime.start()
     assert not runtime.ready
+
+
+async def test_reconnect_restores_control_queue_and_reannounces(
+    core: FakeCore, topology: wire.Topology
+) -> None:
+    gate = asyncio.Event()
+    runtime = await start(hello(core, gate=gate), topology, replica_id="r1")
+    try:
+        await core.wait_for("module.online")
+        conn = runtime.transport._conn  # type: ignore[attr-defined]
+        assert conn is not None
+        # Drop the TCP connection under the robust connection, as a broker restart would.
+        await conn.transport.connection.close(ConnectionError("test: connection lost"))
+        await core.wait_for("module.online", count=2, timeout=20)
+        async with asyncio.timeout(10):
+            while not runtime.ready:
+                await asyncio.sleep(0.05)
+        # The new exclusive control queue is bound again: a cancel reaches the replica.
+        await core.work("hello-hello", step_request({"text": ""}, lease_seconds=1))
+        await core.wait_for("step.heartbeat")
+        await core.cancel("hello-hello", step_cancel())
+        async with asyncio.timeout(5):
+            while runtime.in_flight:
+                await asyncio.sleep(0.05)
+        assert core.of_type("step.succeeded") == []
+    finally:
+        await runtime.stop()

@@ -38,7 +38,7 @@ from collections.abc import AsyncIterator
 from manufacture import RunRequest, SourceContext
 
 
-@app.source(pipeline="hello-world")  # on source.trigger; on_start=True / every="1h" also work
+@app.source(pipeline="hello-world")  # on source.trigger (temporary: on_start=True / every="1h")
 async def start(ctx: SourceContext) -> AsyncIterator[RunRequest]:
     yield RunRequest(data={"text": ""}, dedup_key=ctx.trigger_id)
 ```
@@ -62,8 +62,22 @@ echo '{"text": ""}' > in.json && mf-module test hello:app --input in.json   # no
 
 What the runtime guarantees (late ack, idempotency by `attempt.id`, heartbeats, deadline,
 cancel, graceful shutdown) and the open contract questions are in
-[ADR 0003](docs/adr/0003-module-runtime.md). Unit-test handlers without a broker with
-`manufacture.testing` (`FakeTransport`, `step_request`, `call_step`).
+[ADR 0003](docs/adr/0003-module-runtime.md). `on_start` and `every` run in every replica and
+are temporary: schedules are moving to the core.
+
+Unit-test handlers without a broker with `manufacture.testing`:
+
+```python
+from manufacture.testing import call_on_start, call_source, call_step
+
+result = await call_step(app, {"text": ""})  # step.succeeded / step.failed
+assert result.output == {"text": "hello"}
+
+runs = (await call_source(init_app, {"n": 2})).runs  # one source.trigger -> run.requested payloads
+runs = (await call_on_start(init_app)).runs  # what on_start requests (temporary)
+```
+
+Every message the module publishes in these helpers is validated against the contract schema.
 
 ## Development
 

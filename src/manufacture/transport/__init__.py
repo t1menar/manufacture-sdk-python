@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
+from typing import Any, Protocol
 
-__all__ = ["Delivery", "DeliveryHandler", "Identity", "Inbound", "Transport"]
+__all__ = ["Delivery", "DeliveryHandler", "Identity", "Inbound", "ReconnectHandler", "Transport"]
 
 
 class Inbound(StrEnum):
@@ -40,6 +40,7 @@ class Delivery(Protocol):
 
 
 DeliveryHandler = Callable[[Delivery], Awaitable[None]]
+ReconnectHandler = Callable[[], Coroutine[Any, Any, None]]
 
 
 class Transport(Protocol):
@@ -48,6 +49,11 @@ class Transport(Protocol):
     @property
     def ready(self) -> bool:
         """Connected and able to publish."""
+        ...
+
+    def on_reconnect(self, handler: ReconnectHandler) -> None:
+        """Call ``handler`` after the connection was lost and restored, once the queues and
+        consumers are back (the control queue is exclusive, so it is a new queue)."""
         ...
 
     async def connect(self, identity: Identity) -> None: ...

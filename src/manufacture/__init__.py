@@ -4,12 +4,13 @@ from manufacture._contract import CONTRACT_VERSION
 from manufacture._version import __version__
 from manufacture.app import Module, RunRequest
 from manufacture.context import Context, NoSettings, Secrets, SourceContext
-from manufacture.errors import Fatal, NeedsAttention, StepError, Transient
+from manufacture.errors import ErrorCode, Fatal, NeedsAttention, StepError, Transient
 from manufacture.settings import RuntimeSettings
 
 __all__ = [
     "CONTRACT_VERSION",
     "Context",
+    "ErrorCode",
     "Fatal",
     "Module",
     "NeedsAttention",
