@@ -79,6 +79,29 @@ runs = (await call_on_start(init_app)).runs  # what on_start requests (temporary
 
 Every message the module publishes in these helpers is validated against the contract schema.
 
+### Running a whole pipeline without the platform
+
+`manufacture.fakecore` executes a pipeline from its spec (linear stages, timeouts, leases,
+retries, optional steps, merge, `max_runs`, cancel) against your real modules, over an
+in-memory broker or a real RabbitMQ. Parallel/foreach/routes/`when`/input projections
+are refused, not approximated. Details and limits: [ADR 0004](docs/adr/0004-fake-core.md).
+
+```python
+from manufacture.fakecore import FakeCore
+
+async with FakeCore("pipeline.yaml", [init.app, hello.app, world.app, exclaim.app]) as core:
+    run = await core.run("hello-world", {"text": ""})
+    assert run.status == "succeeded" and run.data == {"text": "hello world!"}
+
+# the same over RabbitMQ; modules not passed as code may connect by themselves
+FakeCore("pipeline.yaml", [hello.app], broker="amqp", amqp_url="amqp://...")
+```
+
+```bash
+pip install 'manufacture-sdk[fakecore]'   # PyYAML for YAML specs
+mf-fakecore -f pipeline.yaml modules/*/main.py --run hello-world --data '{"text": ""}'
+```
+
 ## Development
 
 Requires [uv](https://docs.astral.sh/uv/) and Python 3.12+.
