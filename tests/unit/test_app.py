@@ -71,7 +71,7 @@ def test_manifest() -> None:
     assert doc["module"] == "hello-hello"
     assert doc["version"] == "1.2.3"
     assert doc["concurrency"] == 4
-    assert doc["contract_version"] == "0.2.1"
+    assert doc["contract_version"] == "0.3.0"
     assert doc["kinds"] == ["step", "source"]
     assert doc["step"]["name"] == "handle"
     assert doc["step"]["input_schema"]["required"] == ["text"]

@@ -279,7 +279,10 @@ async def test_heartbeats_and_progress(running: RuntimeFactory) -> None:
         await transport.wait_for("step.succeeded")
         beats = transport.of_type("step.heartbeat")
         assert len(beats) >= 3  # progress + every lease/3 (~333 ms)
-        assert beats[0].payload == {"progress": 0.5, "message": "half", "replica_id": "r1"}
+        assert beats[0].payload == {"replica_id": "r1"}  # at once: the core's timeout starts here
+        assert {"progress": 0.5, "message": "half", "replica_id": "r1"} in [
+            b.payload for b in beats
+        ]
         assert all(b.routing_key == "step.heartbeat" for b in beats)
         assert beats[-1].envelope.attempt is not None
 
@@ -416,7 +419,7 @@ async def test_module_online_and_heartbeat(running: RuntimeFactory) -> None:
         assert payload["concurrency"] == 2
         assert payload["kinds"] == ["step"]
         assert payload["sdk"]["name"] == "manufacture-sdk-python"
-        assert payload["contract_version"] == "0.2.1"
+        assert payload["contract_version"] == "0.3.0"
         assert payload["input_schema"]["required"] == ["text"]
         beats = await transport.wait_for("module.heartbeat", count=2)
         assert beats[0].payload == {"module": "hello-hello", "replica_id": "r1", "in_flight": 0}
@@ -457,5 +460,5 @@ async def test_ready_follows_transport(running: RuntimeFactory) -> None:
 
 
 async def test_module_without_handlers_does_not_start() -> None:
-    with pytest.raises(RuntimeError, match="no @step or @source"):
+    with pytest.raises(RuntimeError, match="no @step, @source"):
         await Runtime(Module("empty"), transport=FakeTransport()).start()

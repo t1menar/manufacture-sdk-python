@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import pytest
 
+from manufacture import _wire as wire
 from manufacture.contract import validate_envelope
 
 VECTORS = Path(__file__).parent / "testdata" / "envelope"
@@ -30,4 +31,6 @@ def test_valid_vectors_pass(path: Path) -> None:
 
 @pytest.mark.parametrize("path", vectors("invalid"), ids=lambda p: p.stem)
 def test_invalid_vectors_are_rejected(path: Path) -> None:
-    assert validate_envelope(load(path)) != []
+    # The core also checks every ``$blob`` object of a payload (wire.decode does the same).
+    with pytest.raises(wire.EnvelopeError):
+        wire.decode(path.read_bytes())

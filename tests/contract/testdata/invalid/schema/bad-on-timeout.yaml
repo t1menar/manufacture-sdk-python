@@ -1,0 +1,8 @@
+# want: spec.stages[0].step.on_timeout | value must be one of
+apiVersion: manufacture.dev/v1
+kind: Pipeline
+metadata: {name: p}
+spec:
+  stages:
+    - name: a
+      step: {module: m, on_timeout: ignore}

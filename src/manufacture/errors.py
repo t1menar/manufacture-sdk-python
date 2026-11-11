@@ -7,7 +7,19 @@ from typing import ClassVar
 
 from manufacture._wire import ErrorClass
 
-__all__ = ["ErrorClass", "ErrorCode", "Fatal", "NeedsAttention", "StepError", "Transient"]
+__all__ = [
+    "Cancelled",
+    "ConfirmError",
+    "DeadlineTooClose",
+    "ErrorClass",
+    "ErrorCode",
+    "Fatal",
+    "NeedsAttention",
+    "StepError",
+    "StepWaiting",
+    "Superseded",
+    "Transient",
+]
 
 
 class ErrorCode(StrEnum):
@@ -44,11 +56,21 @@ class StepError(Exception):
     default_code: ClassVar[str]
 
     def __init__(
-        self, message: str = "", *, code: str | None = None, retry_after_s: float | None = None
+        self,
+        message: str = "",
+        *,
+        code: str | None = None,
+        retry_after_s: float | None = None,
+        recommendation: str | None = None,
+        details: dict[str, object] | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message
         self.code = code or self.default_code
+        self.recommendation = recommendation
+        """Shown to the operator for ``attention`` (what to check or do)."""
+        self.details = details
+        """Structured context for the operator (at most 16 KiB)."""
         if retry_after_s is not None and retry_after_s < 0:
             raise ValueError("retry_after_s must be >= 0")
         self.retry_after_s = retry_after_s
@@ -73,3 +95,35 @@ class NeedsAttention(StepError):
 
     error_class = "attention"
     default_code = "needs_attention"
+
+
+class StepWaiting(BaseException):
+    """Raised by ``ctx.wait``: ``step.waiting`` was sent and the handler must stop.
+
+    The result is delivered later by :meth:`Module.complete` / :meth:`Module.fail`, possibly
+    from another replica. It derives from ``BaseException`` so a broad ``except Exception``
+    in a handler cannot swallow it.
+    """
+
+
+class ConfirmError(Exception):
+    """``ctx.confirm`` was refused: the irreversible action must **not** be performed.
+
+    A runtime that sees this escape the handler reports nothing (the core already knows).
+    """
+
+    def __init__(self, message: str, *, detail: str | None = None) -> None:
+        super().__init__(message)
+        self.detail = detail
+
+
+class Superseded(ConfirmError):
+    """The attempt is no longer current (a newer attempt, ``lost`` or ``timed_out``)."""
+
+
+class Cancelled(ConfirmError):
+    """The run or the step was cancelled."""
+
+
+class DeadlineTooClose(ConfirmError):
+    """Less time is left before the step deadline than ``extend_seconds``."""

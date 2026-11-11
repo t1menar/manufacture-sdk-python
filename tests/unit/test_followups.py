@@ -148,5 +148,5 @@ def test_run_request_copies_read_only_views() -> None:
     assert type(req.data["copy"]) is dict
     assert (
         req.model_dump_json()
-        == '{"data":{"copy":{"a":{"b":[1,2]}}},"dedup_key":null,"pipeline":null}'
+        == '{"data":{"copy":{"a":{"b":[1,2]}}},"dedup_key":null,"pipeline":null,"priority":null,"labels":{}}'
     )

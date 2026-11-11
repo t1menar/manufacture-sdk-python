@@ -1,0 +1,7 @@
+# want: spec.subscribe[1] | run.finished is already subscribed
+apiVersion: manufacture.dev/v1
+kind: Module
+metadata: {name: ideas}
+spec:
+  image: localhost:5001/ideas:1
+  subscribe: [run.finished, {event: run.finished, pipelines: [video]}]

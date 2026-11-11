@@ -39,14 +39,28 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "max_runs": { "type": "integer", "minimum": 1, "maximum": 100000 }
+            "max_runs": { "type": "integer", "minimum": 1, "maximum": 100000 },
+            "count_waiting": { "description": "Runs in waiting_human hold a max_runs slot. By default they do not (a resumed run continues without admission, so max_runs may be exceeded for a while).", "type": "boolean", "default": false },
+            "min_interval": { "description": "Minimum time between the starts (admissions) of two runs of this pipeline.", "$ref": "common.schema.json#/$defs/duration" }
+          }
+        },
+        "priority": { "description": "Default priority of new runs, -100..100. Higher is admitted and dispatched first; FIFO within a priority.", "type": "integer", "minimum": -100, "maximum": 100, "default": 0 },
+        "budget": {
+          "description": "Cost limits over usage.cost_usd that modules report. Reaching run_usd cancels the unconfirmed attempts and parks the run in needs_attention (budget_exceeded); day_usd keeps new runs queued (reason day_budget).",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "run_usd": { "description": "Per run; an operator may raise it with PATCH /runs/{id}/budget.", "type": "number", "exclusiveMinimum": 0 },
+            "warn_usd": { "description": "Emit run.budget_warning once when a run spends this much; must be below run_usd.", "type": "number", "exclusiveMinimum": 0 },
+            "day_usd": { "description": "Per pipeline and day (MF_BUDGET_DAY_TZ, UTC by default).", "type": "number", "exclusiveMinimum": 0 }
           }
         },
         "context": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "schema": { "description": "JSON Schema (2020-12) of run data.", "type": "object" }
+            "schema": { "description": "JSON Schema (2020-12) of run data.", "type": "object" },
+            "max_bytes": { "description": "Largest run data after a merge; a step that exceeds it fails with fatal data_too_large. Default 196608 (192 KiB).", "type": "integer", "minimum": 1024, "maximum": 1048576, "default": 196608 }
           }
         },
         "blobs": {
@@ -63,7 +77,8 @@
           "properties": {
             "timeout": { "$ref": "common.schema.json#/$defs/duration" },
             "lease": { "$ref": "common.schema.json#/$defs/duration" },
-            "retry": { "$ref": "#/$defs/retry" }
+            "retry": { "$ref": "#/$defs/retry" },
+            "on_timeout": { "$ref": "#/$defs/onTimeout" }
           }
         },
         "stages": {
@@ -118,6 +133,21 @@
         "timeout": { "$ref": "common.schema.json#/$defs/duration" },
         "lease": { "$ref": "common.schema.json#/$defs/duration" },
         "retry": { "$ref": "#/$defs/retry" },
+        "on_timeout": { "$ref": "#/$defs/onTimeout" },
+        "on_cancel": {
+          "description": "What an operator cancel of this step does to the run (a run cancel always cancels the run).",
+          "enum": ["fail", "attention"],
+          "default": "attention"
+        },
+        "wait": {
+          "description": "The step may wait (step.waiting) for a human or an external system. Allowed only on a single-step stage.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "timeout": { "description": "Total time the step may spend in waiting; 7d by default. on_timeout applies when it expires.", "$ref": "common.schema.json#/$defs/duration" }
+          }
+        },
+        "min_budget_usd": { "description": "Overrides the module min_budget_usd for this step.", "type": "number", "minimum": 0 },
         "when": { "$ref": "common.schema.json#/$defs/expression" },
         "merge": {
           "description": "data: the step output is merged into run data (JSON Merge Patch); none: kept only under steps.<id>.output.",
@@ -130,6 +160,10 @@
           "default": false
         }
       }
+    },
+    "onTimeout": {
+      "description": "What happens when timeout (counted from the first heartbeat, waiting excluded) or wait.timeout expires: retry (new attempt of the same visit, the same step_key, within retry.max_attempts; then needs_attention), fail (the step fails), attention (the run goes to needs_attention). Default retry. A confirmed attempt is never retried: it goes to needs_attention (outcome_unknown).",
+      "enum": ["retry", "fail", "attention"]
     },
     "retry": {
       "type": "object",

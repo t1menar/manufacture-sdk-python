@@ -1,0 +1,16 @@
+# want: spec.stages[0].parallel[0].wait | wait is allowed only on a single-step stage
+# warn: spec.stages[1].step.on_timeout | never retries
+# warn: spec.stages[2].step.wait | on_timeout is not set
+apiVersion: manufacture.dev/v1
+kind: Pipeline
+metadata: {name: waits}
+spec:
+  stages:
+    - name: reviews
+      parallel:
+        - {module: review-a, wait: {timeout: 1d}, on_timeout: attention}
+        - {module: review-b}
+    - name: render
+      step: {module: render, timeout: 10m, on_timeout: retry, retry: {max_attempts: 1}}
+    - name: review
+      step: {module: review, wait: {}}

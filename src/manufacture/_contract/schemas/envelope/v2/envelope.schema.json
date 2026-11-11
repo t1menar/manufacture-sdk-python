@@ -12,7 +12,7 @@
       "$ref": "#/$defs/uuid"
     },
     "type": {
-      "enum": ["step.requested", "step.cancel", "source.trigger", "step.heartbeat", "step.succeeded", "step.failed", "run.requested", "module.online", "module.heartbeat", "module.offline"]
+      "enum": ["step.requested", "step.cancel", "source.trigger", "step.heartbeat", "step.waiting", "step.succeeded", "step.failed", "run.requested", "run.rejected", "run.started", "run.finished", "module.online", "module.heartbeat", "module.offline"]
     },
     "schema_version": { "const": 2 },
     "occurred_at": { "type": "string", "format": "date-time" },
@@ -32,10 +32,15 @@
   },
   "allOf": [
     { "if": { "$ref": "#/$defs/isStepMessage" }, "then": { "required": ["run_id", "attempt"] } },
+    { "if": { "$ref": "#/$defs/isRunNotification" }, "then": { "required": ["run_id"] } },
     { "if": { "properties": { "type": { "const": "step.requested" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/stepRequested" } } } },
     { "if": { "properties": { "type": { "const": "step.cancel" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/stepCancel" } } } },
     { "if": { "properties": { "type": { "const": "source.trigger" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/sourceTrigger" } } } },
     { "if": { "properties": { "type": { "const": "step.heartbeat" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/stepHeartbeat" } } } },
+    { "if": { "properties": { "type": { "const": "step.waiting" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/stepWaiting" } } } },
+    { "if": { "properties": { "type": { "const": "run.rejected" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/runRejected" } } } },
+    { "if": { "properties": { "type": { "const": "run.started" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/runStarted" } } } },
+    { "if": { "properties": { "type": { "const": "run.finished" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/runFinished" } } } },
     { "if": { "properties": { "type": { "const": "step.succeeded" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/stepSucceeded" } } } },
     { "if": { "properties": { "type": { "const": "step.failed" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/stepFailed" } } } },
     { "if": { "properties": { "type": { "const": "run.requested" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/runRequested" } } } },
@@ -47,8 +52,64 @@
     "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
     "name": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" },
     "isStepMessage": {
-      "properties": { "type": { "enum": ["step.requested", "step.cancel", "step.heartbeat", "step.succeeded", "step.failed"] } }
+      "properties": { "type": { "enum": ["step.requested", "step.cancel", "step.heartbeat", "step.waiting", "step.succeeded", "step.failed"] } }
     },
+    "isRunNotification": {
+      "properties": { "type": { "enum": ["run.started", "run.finished"] } }
+    },
+    "usage": {
+      "description": "Cumulative usage of the attempt so far, priced by the module (the core does not know prices). Each report replaces the previous one; the core keeps the component-wise maximum, so a repeated or reordered report never double-counts.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cost_usd": { "type": "number", "minimum": 0 },
+        "tokens": {
+          "description": "Per model, at most 32.",
+          "type": "object",
+          "maxProperties": 32,
+          "propertyNames": { "$ref": "#/$defs/metricName" },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "input": { "type": "integer", "minimum": 0 },
+              "output": { "type": "integer", "minimum": 0 },
+              "cache_read": { "type": "integer", "minimum": 0 },
+              "cache_write": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    "metricName": { "type": "string", "pattern": "^[A-Za-z0-9._:/-]{1,128}$" },
+    "labels": {
+      "description": "Free-form string labels of a run (for example idea_ref), at most 32.",
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": { "type": "string", "pattern": "^[a-z0-9]([a-z0-9._/-]{0,61}[a-z0-9])?$" },
+      "additionalProperties": { "type": "string", "maxLength": 256 }
+    },
+    "trigger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["manual", "source", "schedule", "api", "retry"] },
+        "by": { "type": "string", "maxLength": 128 }
+      }
+    },
+    "runError": {
+      "description": "The error that ended a failed run (the last failed step).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["message"],
+      "properties": {
+        "class": { "type": "string", "maxLength": 64 },
+        "code": { "type": "string", "maxLength": 128 },
+        "message": { "type": "string", "maxLength": 4096 }
+      }
+    },
+
     "attemptRef": {
       "description": "One attempt of one step. id is unique per attempt: a result for an attempt that is no longer current is ignored by the core.",
       "type": "object",
@@ -63,16 +124,32 @@
       "description": "core -> module work queue: run the step handler.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["pipeline", "revision", "stage", "step", "input", "deadline", "lease_seconds", "blob_prefix"],
+      "required": ["pipeline", "revision", "stage", "step", "step_key", "visit", "input", "timeout_seconds", "lease_seconds", "blob_prefix"],
       "properties": {
         "pipeline": { "$ref": "#/$defs/name" },
         "revision": { "type": "integer", "minimum": 1 },
         "stage": { "$ref": "#/$defs/name" },
         "step": { "$ref": "#/$defs/name" },
+        "step_key": { "description": "Stable id of one visit of the step, the same for all its attempts: uuid5(STEP_NS, \"<run_id>:<step>:<item_index or ->:<visit>\") with STEP_NS = uuid5(NAMESPACE_URL, \"https://manufacture.dev/steps\"). Idempotency key for external side effects and module session state.", "$ref": "#/$defs/uuid" },
+        "visit": { "description": "1 on the first pass of the stage, higher when a route loops back to it.", "type": "integer", "minimum": 1 },
         "item_index": { "description": "Position of the item in a foreach stage.", "type": "integer", "minimum": 0 },
         "input": { "description": "Run data, or the step input projection when the step declares one.", "type": "object" },
         "config": { "description": "Module config merged with step config.", "type": "object" },
-        "deadline": { "description": "The attempt times out at this instant.", "type": "string", "format": "date-time" },
+        "timeout_seconds": { "description": "Execution budget, counted from the first step.heartbeat of the attempt (the SDK sends one on receipt), without the time spent waiting.", "type": "integer", "minimum": 1 },
+        "deadline": { "description": "Optional absolute ceiling: the attempt is useless after this instant even if it started late.", "type": "string", "format": "date-time" },
+        "budget": {
+          "description": "Present when the run has a budget, so the module can limit itself.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["run_usd", "spent_usd", "remaining_usd"],
+          "properties": {
+            "run_usd": { "type": "number", "minimum": 0 },
+            "spent_usd": { "type": "number", "minimum": 0 },
+            "remaining_usd": { "type": "number" }
+          }
+        },
+        "priority": { "type": "integer", "minimum": -100, "maximum": 100 },
+        "labels": { "$ref": "#/$defs/labels" },
         "lease_seconds": { "description": "Send step.heartbeat at least this often, or the attempt is considered lost.", "type": "integer", "minimum": 1 },
         "blob_prefix": { "description": "Where the module may write blobs: s3://bucket/runs/<run>/<step>/<attempt>/", "type": "string", "pattern": "^s3://" }
       }
@@ -83,7 +160,7 @@
       "additionalProperties": false,
       "required": ["reason"],
       "properties": {
-        "reason": { "enum": ["timeout", "lost", "cancelled", "superseded"] }
+        "reason": { "enum": ["timeout", "lost", "cancelled", "superseded", "budget", "operator"] }
       }
     },
     "sourceTrigger": {
@@ -104,8 +181,72 @@
       "properties": {
         "progress": { "type": "number", "minimum": 0, "maximum": 1 },
         "message": { "type": "string", "maxLength": 1024 },
-        "replica_id": { "type": "string", "maxLength": 128 }
+        "replica_id": { "type": "string", "maxLength": 128 },
+        "usage": { "$ref": "#/$defs/usage" }
       }
+    },
+    "stepWaiting": {
+      "description": "module -> core: the attempt waits for a human or an external system. The core pauses the lease and the execution timeout (only wait.timeout runs) until the next step.heartbeat of the attempt or its result. The SDK acks the work message after this is confirmed and completes the attempt later from any replica. message_id = uuid5(MSG_NS, \"<attempt_id>:step.waiting:<seq>\").",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason", "seq"],
+      "properties": {
+        "reason": { "enum": ["human", "external"] },
+        "message": { "type": "string", "maxLength": 1024 },
+        "seq": { "description": "1, 2, ... per attempt; a new wait in the same attempt uses the next number.", "type": "integer", "minimum": 1 },
+        "expected_by": { "description": "When the module expects to continue; shown in the UI only (reminders are the module's job).", "type": "string", "format": "date-time" },
+        "replica_id": { "type": "string", "maxLength": 128 },
+        "usage": { "$ref": "#/$defs/usage" }
+      }
+    },
+    "runRejected": {
+      "description": "core -> every replica of a source module (control exchange): a run.requested did not start a run (unknown pipeline, invalid data). The request is not dead-lettered.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["request_message_id", "pipeline", "code", "message"],
+      "properties": {
+        "request_message_id": { "$ref": "#/$defs/uuid" },
+        "pipeline": { "type": "string", "maxLength": 63 },
+        "dedup_key": { "type": "string", "maxLength": 256 },
+        "code": { "enum": ["unknown_pipeline", "invalid_data", "pipeline_deleted", "forbidden"] },
+        "message": { "type": "string", "maxLength": 4096 }
+      }
+    },
+    "runStarted": {
+      "description": "core -> mf.notify.<module> of every module subscribed to run.started, on queued -> running. message_id = uuid5(MSG_NS, \"<run_id>:run.started\").",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pipeline", "revision", "trigger", "started_at"],
+      "properties": {
+        "pipeline": { "$ref": "#/$defs/name" },
+        "revision": { "type": "integer", "minimum": 1 },
+        "labels": { "$ref": "#/$defs/labels" },
+        "dedup_key": { "type": "string", "maxLength": 256 },
+        "trigger": { "$ref": "#/$defs/trigger" },
+        "priority": { "type": "integer", "minimum": -100, "maximum": 100 },
+        "started_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "runFinished": {
+      "description": "core -> mf.notify.<module> of every subscriber, once per run, on succeeded, failed or cancelled (needs_attention is not an end). message_id = uuid5(MSG_NS, \"<run_id>:run.finished\").",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pipeline", "revision", "status", "finished_at", "usage"],
+      "properties": {
+        "pipeline": { "$ref": "#/$defs/name" },
+        "revision": { "type": "integer", "minimum": 1 },
+        "status": { "enum": ["succeeded", "failed", "cancelled"] },
+        "labels": { "$ref": "#/$defs/labels" },
+        "dedup_key": { "type": "string", "maxLength": 256 },
+        "trigger": { "$ref": "#/$defs/trigger" },
+        "started_at": { "type": "string", "format": "date-time" },
+        "finished_at": { "type": "string", "format": "date-time" },
+        "error": { "$ref": "#/$defs/runError" },
+        "usage": { "description": "Run totals.", "$ref": "#/$defs/usage" },
+        "data": { "description": "Final run data; $blob references are not expanded.", "type": "object" },
+        "data_ref": { "description": "Instead of data when it exceeds 192 KiB: the snapshot blob.", "$ref": "blob-ref.schema.json" }
+      },
+      "not": { "required": ["data", "data_ref"] }
     },
     "stepSucceeded": {
       "description": "module -> core: the attempt finished. With merge: data the output is applied to run data as a JSON Merge Patch (RFC 7396).",
@@ -115,7 +256,8 @@
       "properties": {
         "output": { "type": "object" },
         "replica_id": { "type": "string", "maxLength": 128 },
-        "duration_ms": { "type": "integer", "minimum": 0 }
+        "duration_ms": { "type": "integer", "minimum": 0 },
+        "usage": { "$ref": "#/$defs/usage" }
       }
     },
     "stepFailed": {
@@ -125,11 +267,14 @@
       "required": ["class", "message"],
       "properties": {
         "class": { "enum": ["transient", "fatal", "attention"] },
-        "code": { "type": "string", "maxLength": 128 },
+        "code": { "description": "Reserved codes: module_shutdown (transient; the replica is stopping), budget (the module refused for lack of budget), invalid_blob_ref (set by the core).", "type": "string", "maxLength": 128 },
         "message": { "type": "string", "maxLength": 4096 },
         "retry_after_seconds": { "type": "integer", "minimum": 0 },
+        "recommendation": { "description": "What an operator should do (attention).", "type": "string", "maxLength": 1024 },
+        "details": { "description": "Structured context for the operator; at most 16 KiB.", "type": "object" },
         "replica_id": { "type": "string", "maxLength": 128 },
-        "duration_ms": { "type": "integer", "minimum": 0 }
+        "duration_ms": { "type": "integer", "minimum": 0 },
+        "usage": { "$ref": "#/$defs/usage" }
       }
     },
     "runRequested": {
@@ -141,7 +286,9 @@
         "pipeline": { "$ref": "#/$defs/name" },
         "dedup_key": { "type": "string", "minLength": 1, "maxLength": 256 },
         "trigger_id": { "$ref": "#/$defs/uuid" },
-        "data": { "type": "object" }
+        "data": { "type": "object" },
+        "priority": { "type": "integer", "minimum": -100, "maximum": 100 },
+        "labels": { "$ref": "#/$defs/labels" }
       }
     },
     "moduleOnline": {
@@ -166,7 +313,8 @@
         "concurrency": { "type": "integer", "minimum": 1 },
         "kinds": { "description": "Handlers the module implements.", "type": "array", "items": { "enum": ["step", "source"] }, "uniqueItems": true },
         "input_schema": { "type": "object" },
-        "output_schema": { "type": "object" }
+        "output_schema": { "type": "object" },
+        "min_budget_usd": { "description": "Estimated cost of one step; used when Module.spec does not set min_budget_usd.", "type": "number", "minimum": 0 }
       }
     },
     "moduleHeartbeat": {

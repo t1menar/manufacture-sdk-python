@@ -2,14 +2,16 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://manufacture.dev/schemas/envelope/v2/blob-ref.schema.json",
   "title": "Blob reference (claim check)",
-  "description": "A value stored in object storage instead of inline. Any object in input, output or run data that has the $blob key is a reference. The key is $blob, not $ref, so data never looks like a JSON Reference.",
+  "description": "A value stored in object storage instead of inline. Any object in input, output or run data that has the $blob key is a reference. The key is $blob, not $ref, so data never looks like a JSON Reference. Objects are written once (If-None-Match: *); on step.succeeded each $blob must be under the attempt blob_prefix or already known in the same run, otherwise the result is rejected as fatal invalid_blob_ref.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["$blob", "size"],
+  "required": ["$blob", "size", "sha256"],
   "properties": {
     "$blob": { "type": "string", "pattern": "^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/.+" },
     "size": { "type": "integer", "minimum": 0 },
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-    "content_type": { "type": "string", "maxLength": 255 }
+    "content_type": { "type": "string", "maxLength": 255 },
+    "name": { "description": "Display or download file name.", "type": "string", "maxLength": 255 },
+    "keep": { "description": "Exempt from blob GC after the run ends.", "type": "boolean", "default": false }
   }
 }

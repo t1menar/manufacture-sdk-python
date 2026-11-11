@@ -46,6 +46,12 @@ class RuntimeSettings(BaseSettings):
     health_addr: str = ":8081"
     """``MF_HEALTH_ADDR`` for ``/healthz`` and ``/readyz``; empty disables."""
 
+    core_url: str | None = None
+    """``MF_CORE_URL``: gateway of the core; only ``ctx.confirm`` needs it."""
+
+    module_token: SecretStr | None = None
+    """``MF_MODULE_TOKEN``: module token (``mft_…``) for ``ctx.confirm``."""
+
     log_level: str = "info"
     log_format: Literal["json", "text"] = "json"
 

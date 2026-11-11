@@ -1,0 +1,51 @@
+{
+  "description": "step_key = uuid5(STEP_NS, \"<run_id>:<stage>:<step_id>:<item_index or ->:<visit>\"); run_id lower-case with hyphens.",
+  "step_namespace": "fa1e7bfd-2c37-5637-bb2e-15cdf57e7e2d",
+  "cases": [
+    {
+      "run_id": "0190f5a2-7c1e-7b3a-9e4d-2f1a3b4c5d6e",
+      "stage": "scenario",
+      "step": "scenario",
+      "item_index": null,
+      "visit": 2,
+      "name": "0190f5a2-7c1e-7b3a-9e4d-2f1a3b4c5d6e:scenario:scenario:-:2",
+      "step_key": "2c9c0e16-313f-52e8-a3a0-92d970278aaa"
+    },
+    {
+      "run_id": "0190f5a2-7c1e-7b3a-9e4d-2f1a3b4c5d6e",
+      "stage": "scenario",
+      "step": "scenario",
+      "item_index": null,
+      "visit": 1,
+      "name": "0190f5a2-7c1e-7b3a-9e4d-2f1a3b4c5d6e:scenario:scenario:-:1",
+      "step_key": "8eb4c2ad-77cf-5712-b7c0-9802172bab01"
+    },
+    {
+      "run_id": "0190f5a2-7c1e-7b3a-9e4d-2f1a3b4c5d6e",
+      "stage": "render",
+      "step": "render",
+      "item_index": 0,
+      "visit": 1,
+      "name": "0190f5a2-7c1e-7b3a-9e4d-2f1a3b4c5d6e:render:render:0:1",
+      "step_key": "247dbeb2-936e-5fa3-b151-012b0f49ae40"
+    },
+    {
+      "run_id": "0190f5a2-7c1e-7b3a-9e4d-2f1a3b4c5d6e",
+      "stage": "render",
+      "step": "render",
+      "item_index": 3,
+      "visit": 1,
+      "name": "0190f5a2-7c1e-7b3a-9e4d-2f1a3b4c5d6e:render:render:3:1",
+      "step_key": "4904c2df-3244-54bd-86b6-57e3b8afe00d"
+    },
+    {
+      "run_id": "0190f5a2-7c1e-7b3a-9e4d-2f1a3b4c5d6e",
+      "stage": "review1",
+      "step": "review1",
+      "item_index": null,
+      "visit": 1,
+      "name": "0190f5a2-7c1e-7b3a-9e4d-2f1a3b4c5d6e:review1:review1:-:1",
+      "step_key": "73489623-b0a5-5c71-9a3d-ce130e1b1cd6"
+    }
+  ]
+}

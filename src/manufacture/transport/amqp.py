@@ -147,10 +147,13 @@ class AmqpTransport:
             if self._declare:
                 await channel.declare_exchange(t.dlx, aio_pika.ExchangeType.FANOUT, durable=True)
             commands = await self._exchange(channel, t.commands, aio_pika.ExchangeType.DIRECT)
+            notify = stream is Inbound.NOTIFY
             queue = await channel.declare_queue(
-                t.work_queue(module), durable=True, arguments=t.work_queue_arguments()
+                t.notify_queue(module) if notify else t.work_queue(module),
+                durable=True,
+                arguments=t.work_queue_arguments(),
             )
-            await queue.bind(commands, t.work_key(module))
+            await queue.bind(commands, t.notify_key(module) if notify else t.work_key(module))
 
         async def on_message(message: AbstractIncomingMessage) -> None:
             await handler(_AmqpDelivery(message))

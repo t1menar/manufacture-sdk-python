@@ -102,6 +102,23 @@ pip install 'manufacture-sdk[fakecore]'   # PyYAML for YAML specs
 mf-fakecore -f pipeline.yaml modules/*/main.py --run hello-world --data '{"text": ""}'
 ```
 
+## Contract 0.3.0 in the SDK
+
+| Need | API |
+|---|---|
+| Wait for a human or a service (R1) | `await ctx.wait(reason="human", message=..., expected_by=...)` sends `step.waiting`, acks the delivery and stops the handler; keep `str(ctx.attempt_handle)` and `ctx.step_key`; finish later from any replica with `await app.complete(handle, output)` / `await app.fail(handle, error)` |
+| Visit counter and idempotency key (R2) | `ctx.step_key`, `ctx.visit`, `ctx.labels`, `ctx.budget`, `ctx.priority` |
+| Confirm before an irreversible action (R4) | `await ctx.confirm(action=...)` (needs `MF_CORE_URL`, `MF_MODULE_TOKEN`); raises `Superseded` / `Cancelled` / `DeadlineTooClose`, a refusal that escapes the handler reports nothing |
+| Usage and cost (R5) | `ctx.add_usage(cost_usd, model=..., input_tokens=...)`: cumulative, sent with heartbeats, waiting and the result |
+| Run lifecycle (R6) | `@app.on_run_started`, `@app.on_run_finished` (queue `mf.notify.<module>`, needs `subscribe` in the Module resource) |
+| Run priority and labels | `RunRequest(priority=..., labels={...})` |
+| Attention details | `NeedsAttention(msg, recommendation=..., details={...})` |
+
+Test helpers: `call_step(..., visit=, budget=, labels=, core=<httpx handler>)` (a waiting step returns
+`result.waiting`), `call_run_event(app, run_started(...) | run_finished(...))`. The in-process fake core
+runs the 0.3.0 timing rules (timeout from the first heartbeat, pause while waiting) but still has no
+`routes`, CEL projections, visits, budgets or notifications.
+
 ## Development
 
 Requires [uv](https://docs.astral.sh/uv/) and Python 3.12+.
@@ -126,8 +143,8 @@ The core repository owns the contract and publishes it as a release archive
 | `testdata/` (resource specs, envelope conformance vectors) | `tests/contract/testdata/` | no |
 | `messaging.md` (module protocol) | `docs/contract/messaging.md` | no |
 
-Pinned: release [`contract-v0.2.1`](https://github.com/t1menar/manufacture-core/releases/tag/contract-v0.2.1)
-(core commit `3299ffe`), see
+Pinned: release [`contract-v0.3.0`](https://github.com/t1menar/manufacture-core/releases/tag/contract-v0.3.0)
+(core commit `0ca4450`), see
 [`contract.lock.json`](src/manufacture/_contract/contract.lock.json).
 
 ```bash

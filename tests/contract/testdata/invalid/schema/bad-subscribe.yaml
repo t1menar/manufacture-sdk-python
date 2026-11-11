@@ -1,0 +1,8 @@
+# want: spec.subscribe[0] | value must be one of
+# want: spec.subscribe[0] | got string, want object
+apiVersion: manufacture.dev/v1
+kind: Module
+metadata: {name: m}
+spec:
+  image: localhost:5001/m:1
+  subscribe: [step.succeeded]

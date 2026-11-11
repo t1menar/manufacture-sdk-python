@@ -6,13 +6,14 @@ import asyncio
 import contextlib
 import heapq
 import itertools
+import math
 import os
 import random
 import uuid
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, Self
 
 from pydantic import ValidationError
@@ -45,8 +46,11 @@ if TYPE_CHECKING:
 __all__ = ["CoreEvent", "FakeCore", "ProtocolViolationError", "merge_patch"]
 
 PRODUCER = "core"
-_STEP_EVENTS: dict[str, type[wire.StepHeartbeat | wire.StepSucceeded | wire.StepFailed]] = {
+_STEP_EVENTS: dict[
+    str, type[wire.StepHeartbeat | wire.StepWaiting | wire.StepSucceeded | wire.StepFailed]
+] = {
     "step.heartbeat": wire.StepHeartbeat,
+    "step.waiting": wire.StepWaiting,
     "step.succeeded": wire.StepSucceeded,
     "step.failed": wire.StepFailed,
 }
@@ -91,6 +95,8 @@ class _Live:
     plan: StepPlan
     changed: asyncio.Event = field(default_factory=asyncio.Event)
     last_seen: float | None = None
+    waiting: bool = False
+    """``step.waiting``: lease and execution timeout are paused until a heartbeat or a result."""
     result: wire.StepSucceeded | wire.StepFailed | None = None
 
 
@@ -673,15 +679,16 @@ class FakeCore:
         live = _Live(run, step, attempt, sp)
         self._live[attempt.attempt_id] = live
         try:
-            deadline = _now() + timedelta(seconds=sp.timeout_s)
             payload = wire.StepRequested(
                 pipeline=run.pipeline,
                 revision=run.revision,
                 stage=sp.stage,
                 step=sp.step_id,
+                step_key=wire.step_key_for(run.id, sp.stage, sp.step_id, None, 1),
+                visit=1,
                 input=run.data,
                 config=dict(sp.config),
-                deadline=deadline,
+                timeout_seconds=max(1, math.ceil(sp.timeout_s)),
                 lease_seconds=sp.lease_s,
                 blob_prefix=f"s3://mf-blobs/runs/{run.id}/{sp.step_id}/{attempt.attempt_id}/",
             )
@@ -696,10 +703,9 @@ class FakeCore:
             self._set_attempt(live, "dispatched")
             self._set_step(run, step, "dispatched", attempt.number)
             await self.bus.send_work(sp.module, body, message_id=str(mid), type_="step.requested")
-            # 0.2.1: the timeout runs from dispatch (payload.deadline). The lease ticks
-            # from the first sign of life, so work waiting in the queue is not "lost".
-            # (0.3.0 moves the timeout start to the first heartbeat: change only here.)
-            timeout_at = loop.time() + sp.timeout_s
+            # 0.3.0: the execution timeout runs from the first heartbeat of the attempt (the
+            # SDK sends it at once), the lease too: work waiting in the queue is not "lost".
+            timeout_at = float("inf")
             while True:
                 if live.result is not None:
                     return self._apply_result(live)
@@ -707,9 +713,13 @@ class FakeCore:
                     await self._cancel_attempt(live, "cancelled", "cancelled")
                     return "cancelled"
                 now = loop.time()
+                if live.last_seen is not None and timeout_at == float("inf"):
+                    timeout_at = live.last_seen + sp.timeout_s
                 lease_at = (
                     live.last_seen + sp.lease_s if live.last_seen is not None else float("inf")
                 )
+                if live.waiting:  # lease and execution timeout are paused
+                    timeout_at = lease_at = float("inf")
                 if now >= timeout_at:
                     await self._cancel_attempt(live, "timeout", "timed_out")
                     attempt.error = ErrorInfo(
@@ -722,7 +732,10 @@ class FakeCore:
                     return "failed"
                 live.changed.clear()
                 with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(live.changed.wait(), min(timeout_at, lease_at) - now)
+                    wait_s = min(timeout_at, lease_at) - now
+                    await asyncio.wait_for(
+                        live.changed.wait(), None if wait_s == float("inf") else wait_s
+                    )
         finally:
             self._live.pop(attempt.attempt_id, None)
             self._finished_attempts.add(attempt.attempt_id)
@@ -781,7 +794,7 @@ class FakeCore:
             self._seen.append(mid)
             self._seen_set.add(mid)
         match env.type:
-            case "step.heartbeat" | "step.succeeded" | "step.failed":
+            case "step.heartbeat" | "step.waiting" | "step.succeeded" | "step.failed":
                 self._on_step_event(env)
             case "run.requested":
                 self._on_run_requested(env)
@@ -822,7 +835,11 @@ class FakeCore:
             attempt.replica_id = payload.replica_id
         if attempt.started_at is None:
             attempt.started_at = _now()
-        if isinstance(payload, wire.StepHeartbeat):
+        if isinstance(payload, wire.StepWaiting):
+            live.waiting = True
+            attempt.message = payload.message or attempt.message
+        elif isinstance(payload, wire.StepHeartbeat):
+            live.waiting = False
             attempt.progress = (
                 payload.progress if payload.progress is not None else attempt.progress
             )

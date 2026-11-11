@@ -13,6 +13,16 @@
     "spec": { "$ref": "#/$defs/moduleSpec" }
   },
   "$defs": {
+    "runEvent": { "enum": ["run.started", "run.finished"] },
+    "subscription": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event"],
+      "properties": {
+        "event": { "$ref": "#/$defs/runEvent" },
+        "pipelines": { "description": "Only these pipelines; all when absent.", "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "common.schema.json#/$defs/name" } }
+      }
+    },
     "moduleSpec": {
       "type": "object",
       "additionalProperties": false,
@@ -86,6 +96,22 @@
         "config": {
           "description": "Module-level configuration passed with every step; steps may override keys.",
           "type": "object"
+        },
+        "min_budget_usd": {
+          "description": "Estimated cost of one step of this module: a step is not dispatched while the remaining run budget (run_usd - spent) is below it; the run goes to needs_attention (budget_insufficient). A step may override it; module.online may report it.",
+          "type": "number",
+          "minimum": 0
+        },
+        "subscribe": {
+          "description": "Run lifecycle notifications delivered to the module queue mf.notify.<name>: an event name for all pipelines, or {event, pipelines} for some.",
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "anyOf": [
+              { "$ref": "#/$defs/runEvent" },
+              { "$ref": "#/$defs/subscription" }
+            ]
+          }
         }
       }
     }

@@ -14,14 +14,17 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from manufacture._contract import CONTRACT_VERSION
 from manufacture._version import __version__
-from manufacture.context import Context, NoSettings, S, SourceContext
+from manufacture.context import AttemptHandle, Context, NoSettings, S, SourceContext
 
 if TYPE_CHECKING:
+    from manufacture.errors import StepError
+    from manufacture.runtime import Runtime
     from manufacture.settings import RuntimeSettings
     from manufacture.transport import Transport
 
 __all__ = [
     "Module",
+    "RunListener",
     "RunRequest",
     "SourceHandler",
     "SourceSpec",
@@ -67,6 +70,10 @@ class RunRequest(BaseModel):
     """Business key; the core starts at most one run per key. Default: per trigger + index."""
     pipeline: str | None = None
     """Overrides the pipeline of the source declaration."""
+    priority: int | None = Field(default=None, ge=-100, le=100)
+    """Run priority (admission and dispatch order)."""
+    labels: dict[str, str] = Field(default_factory=dict)
+    """Free-form labels of the run (for example ``{"idea_ref": "..."}``), visible in notifications."""
 
     @field_validator("data", mode="before")
     @classmethod
@@ -83,6 +90,8 @@ def _plain(value: object) -> object:
     return value
 
 
+RunListener = Callable[[str, Any], Coroutine[Any, Any, None]]
+"""``async def on_event(run_id: str, event: RunStarted | RunFinished)``."""
 StepHandler = Callable[[Context[_S], InT], Coroutine[Any, Any, OutT]]
 SourceHandler = Callable[[SourceContext[_S]], AsyncIterator[RunRequest]]
 
@@ -144,7 +153,12 @@ class Module(Generic[S]):
 
     @overload
     def __init__(
-        self: Module[NoSettings], name: str, *, version: str = "0.0.0", concurrency: int = 1
+        self: Module[NoSettings],
+        name: str,
+        *,
+        version: str = "0.0.0",
+        concurrency: int = 1,
+        min_budget_usd: float | None = None,
     ) -> None: ...
 
     @overload
@@ -155,6 +169,7 @@ class Module(Generic[S]):
         version: str = "0.0.0",
         concurrency: int = 1,
         settings: type[S],
+        min_budget_usd: float | None = None,
     ) -> None: ...
 
     def __init__(
@@ -164,6 +179,7 @@ class Module(Generic[S]):
         version: str = "0.0.0",
         concurrency: int = 1,
         settings: type[S] | None = None,
+        min_budget_usd: float | None = None,
     ) -> None:
         if not _NAME.fullmatch(name) or len(name) > 63:
             raise ValueError(f"module name {name!r} must be a lowercase DNS label (1-63 chars)")
@@ -172,6 +188,10 @@ class Module(Generic[S]):
         self.name = name
         self.version = version
         self.concurrency = concurrency
+        self.min_budget_usd = min_budget_usd
+        """Smallest run budget left for this module to be dispatched (sent in ``module.online``)."""
+        self.run_listeners: dict[str, list[RunListener]] = {}
+        self._runtime: Runtime[Any] | None = None
         self._settings_type: type[BaseModel] = settings or NoSettings
         self._settings: S | None = None
         self._registry: _Registry[S] = _Registry()
@@ -236,6 +256,59 @@ class Module(Generic[S]):
 
         return register
 
+    def on_run_started(self, fn: RunListener) -> RunListener:
+        """Handle ``run.started`` (needs ``subscribe: [run.started]`` in the Module resource)."""
+        return self._listen("run.started", fn)
+
+    def on_run_finished(self, fn: RunListener) -> RunListener:
+        """Handle ``run.finished`` (``succeeded|failed|cancelled``, with usage and final data)."""
+        return self._listen("run.finished", fn)
+
+    def _listen(self, event: str, fn: RunListener) -> RunListener:
+        if not inspect.iscoroutinefunction(fn):
+            raise TypeError("a run listener must be an async function")
+        self.run_listeners.setdefault(event, []).append(fn)
+        return fn
+
+    async def complete(
+        self,
+        handle: AttemptHandle | str,
+        output: BaseModel | Mapping[str, Any],
+        *,
+        cost_usd: float | None = None,
+    ) -> None:
+        """Finish an attempt that called ``ctx.wait`` (from any replica of this module).
+
+        ``handle`` is ``str(ctx.attempt_handle)`` kept by the module. The output is validated
+        against the step output model.
+        """
+        from manufacture import _wire as wire  # noqa: PLC0415
+
+        spec = self._registry.step
+        if spec is None:
+            raise RuntimeError("module has no step handler")
+        model = spec.output_model.model_validate(
+            output.model_dump() if isinstance(output, BaseModel) else dict(output)
+        )
+        usage = wire.Usage(cost_usd=cost_usd) if cost_usd else None
+        result = wire.StepSucceeded(output=model.model_dump(mode="json"), usage=usage)
+        await self._running().finish(AttemptHandle.parse(handle), result)
+
+    async def fail(
+        self,
+        handle: AttemptHandle | str,
+        error: StepError,
+    ) -> None:
+        """Fail an attempt that called ``ctx.wait`` with a :class:`StepError`."""
+        from manufacture.runtime import classify_exception  # noqa: PLC0415
+
+        await self._running().finish(AttemptHandle.parse(handle), classify_exception(error))
+
+    def _running(self) -> Runtime[Any]:
+        if self._runtime is None:
+            raise RuntimeError("the module is not running; start it with Module.serve()")
+        return self._runtime
+
     # --- runtime ----------------------------------------------------------------------------
 
     @property
@@ -265,6 +338,7 @@ class Module(Generic[S]):
             "kinds": self.kinds,
             "step": self._registry.step.manifest() if self._registry.step else None,
             "sources": [s.manifest() for s in self._registry.sources],
+            "run_events": sorted(self.run_listeners),
         }
 
     async def serve(

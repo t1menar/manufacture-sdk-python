@@ -6,11 +6,14 @@ metadata:
   labels: {project: reels}
 spec:
   trigger: {source: ideas}
-  concurrency: {max_runs: 2}
+  concurrency: {max_runs: 2, min_interval: 30m, count_waiting: false}
+  priority: 10
+  budget: {run_usd: 5, warn_usd: 4, day_usd: 30}
   blobs: {ttl: 30d}
   defaults:
     timeout: 30m
     lease: 2m
+    on_timeout: retry
     retry: {max_attempts: 3, backoff: exponential, initial: 5s, max: 10m, on_errors: [transient, timeout, lost]}
   stages:
     - name: video
@@ -21,7 +24,7 @@ spec:
           idea: data.idea
           feedback: "has(data.review) ? data.review.reason : ''"
     - name: review
-      step: {module: review-telegram, timeout: 7d, lease: 10m, retry: {max_attempts: 1}}
+      step: {module: review-telegram, timeout: 10m, wait: {timeout: 7d}, on_timeout: attention, on_cancel: attention, min_budget_usd: 0}
       routes:
         - when: "steps.review.output.decision == 'rejected'"
           goto: video
@@ -32,7 +35,10 @@ spec:
 apiVersion: manufacture.dev/v1
 kind: Module
 metadata: {name: ideas}
-spec: {image: ghcr.io/t1menar/mf-ideas:1.2.0, replicas: 1}
+spec:
+  image: ghcr.io/t1menar/mf-ideas:1.2.0
+  replicas: 1
+  subscribe: [run.started, {event: run.finished, pipelines: [video]}]
 ---
 apiVersion: manufacture.dev/v1
 kind: Module
@@ -59,3 +65,4 @@ metadata: {name: publish-instagram}
 spec:
   runtime: external
   concurrency: 2
+  min_budget_usd: 1.5

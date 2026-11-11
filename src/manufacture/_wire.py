@@ -1,4 +1,4 @@
-"""Message contract between modules and the core: envelope v2 (contract 0.2.1).
+"""Message contract between modules and the core: envelope v2 (contract 0.3.0).
 
 This module is the only place in the SDK that knows the wire format and the broker
 topology. The source of truth is the vendored core contract:
@@ -18,7 +18,7 @@ from typing import Annotated, Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from manufacture.contract import validate_envelope
+from manufacture.contract import validate_blob_ref, validate_envelope
 
 __all__ = [
     "MAX_MESSAGE_BYTES",
@@ -34,7 +34,10 @@ __all__ = [
     "ModuleHeartbeat",
     "ModuleOffline",
     "ModuleOnline",
+    "RunFinished",
+    "RunRejected",
     "RunRequested",
+    "RunStarted",
     "SdkInfo",
     "SourceTrigger",
     "StepCancel",
@@ -42,11 +45,15 @@ __all__ = [
     "StepHeartbeat",
     "StepRequested",
     "StepSucceeded",
+    "StepWaiting",
     "Topology",
+    "Usage",
     "decode",
     "encode",
     "result_message_id",
     "run_request_message_id",
+    "step_key_for",
+    "waiting_message_id",
 ]
 
 SCHEMA_VERSION: Final = 2
@@ -63,15 +70,20 @@ MessageType = Literal[
     "step.cancel",
     "source.trigger",
     "step.heartbeat",
+    "step.waiting",
     "step.succeeded",
     "step.failed",
     "run.requested",
+    "run.rejected",
+    "run.started",
+    "run.finished",
     "module.online",
     "module.heartbeat",
     "module.offline",
 ]
 ErrorClass = Literal["transient", "fatal", "attention"]
-CancelReason = Literal["timeout", "lost", "cancelled", "superseded"]
+CancelReason = Literal["timeout", "lost", "cancelled", "superseded", "budget", "operator"]
+WaitReason = Literal["human", "external"]
 Kind = Literal["step", "source"]
 
 _MODEL = ConfigDict(extra="forbid", frozen=True)
@@ -111,6 +123,14 @@ class Envelope(BaseModel):
 # --- core -> module ---------------------------------------------------------------------------
 
 
+class RunBudget(BaseModel):
+    model_config = _MODEL
+
+    run_usd: float
+    spent_usd: float
+    remaining_usd: float
+
+
 class StepRequested(BaseModel):
     model_config = _MODEL
 
@@ -118,12 +138,76 @@ class StepRequested(BaseModel):
     revision: int
     stage: str
     step: str
+    step_key: str
+    visit: Annotated[int, Field(ge=1)]
     item_index: int | None = None
     input: dict[str, Any]
     config: dict[str, Any] = Field(default_factory=dict)
-    deadline: datetime
+    timeout_seconds: Annotated[int, Field(ge=1)]
+    deadline: datetime | None = None
+    budget: RunBudget | None = None
+    priority: int | None = None
+    labels: dict[str, str] = Field(default_factory=dict)
     lease_seconds: int
     blob_prefix: str
+
+
+class Trigger(BaseModel):
+    model_config = _MODEL
+
+    kind: str
+    by: str | None = None
+
+
+class RunStarted(BaseModel):
+    """``run.started`` (core -> ``mf.notify.<module>``)."""
+
+    model_config = _MODEL
+
+    pipeline: str
+    revision: int
+    labels: dict[str, str] = Field(default_factory=dict)
+    dedup_key: str | None = None
+    trigger: Trigger
+    priority: int | None = None
+    started_at: datetime
+
+
+class RunError(BaseModel):
+    model_config = _MODEL
+
+    error_class: str | None = Field(default=None, alias="class")
+    code: str | None = None
+    message: str
+
+
+class RunFinished(BaseModel):
+    """``run.finished``: terminal status (``succeeded|failed|cancelled``) with the run totals."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+    pipeline: str
+    revision: int
+    status: Literal["succeeded", "failed", "cancelled"]
+    labels: dict[str, str] = Field(default_factory=dict)
+    dedup_key: str | None = None
+    trigger: Trigger | None = None
+    started_at: datetime | None = None
+    finished_at: datetime
+    error: RunError | None = None
+    usage: dict[str, Any]
+    data: dict[str, Any] | None = None
+    data_ref: dict[str, Any] | None = None
+
+
+class RunRejected(BaseModel):
+    model_config = _MODEL
+
+    request_message_id: str
+    pipeline: str
+    dedup_key: str | None = None
+    code: str
+    message: str | None = None
 
 
 class StepCancel(BaseModel):
@@ -143,12 +227,33 @@ class SourceTrigger(BaseModel):
 # --- module -> core ---------------------------------------------------------------------------
 
 
+class Usage(BaseModel):
+    """Cumulative usage of an attempt (``cost_usd`` priced by the module, tokens per model)."""
+
+    model_config = _MODEL
+
+    cost_usd: Annotated[float, Field(ge=0)] | None = None
+    tokens: dict[str, dict[str, int]] | None = None
+
+
 class StepHeartbeat(BaseModel):
     model_config = _MODEL
 
     progress: Annotated[float, Field(ge=0, le=1)] | None = None
     message: Annotated[str, Field(max_length=1024)] | None = None
     replica_id: _ReplicaId | None = None
+    usage: Usage | None = None
+
+
+class StepWaiting(BaseModel):
+    model_config = _MODEL
+
+    reason: WaitReason
+    seq: Annotated[int, Field(ge=1)]
+    message: Annotated[str, Field(max_length=1024)] | None = None
+    expected_by: datetime | None = None
+    replica_id: _ReplicaId | None = None
+    usage: Usage | None = None
 
 
 class StepSucceeded(BaseModel):
@@ -157,6 +262,7 @@ class StepSucceeded(BaseModel):
     output: dict[str, Any]
     replica_id: _ReplicaId | None = None
     duration_ms: Annotated[int, Field(ge=0)] | None = None
+    usage: Usage | None = None
 
 
 class StepFailed(BaseModel):
@@ -166,8 +272,11 @@ class StepFailed(BaseModel):
     code: Annotated[str, Field(max_length=128)] | None = None
     message: Annotated[str, Field(max_length=4096)]
     retry_after_seconds: Annotated[int, Field(ge=0)] | None = None
+    recommendation: Annotated[str, Field(max_length=1024)] | None = None
+    details: dict[str, Any] | None = None
     replica_id: _ReplicaId | None = None
     duration_ms: Annotated[int, Field(ge=0)] | None = None
+    usage: Usage | None = None
 
 
 class RunRequested(BaseModel):
@@ -177,6 +286,8 @@ class RunRequested(BaseModel):
     data: dict[str, Any]
     dedup_key: Annotated[str, Field(min_length=1, max_length=256)] | None = None
     trigger_id: str | None = None
+    priority: Annotated[int, Field(ge=-100, le=100)] | None = None
+    labels: dict[str, str] | None = None
 
 
 class SdkInfo(BaseModel):
@@ -198,6 +309,7 @@ class ModuleOnline(BaseModel):
     kinds: list[Kind] | None = None
     input_schema: dict[str, Any] | None = None
     output_schema: dict[str, Any] | None = None
+    min_budget_usd: Annotated[float, Field(ge=0)] | None = None
 
 
 class ModuleHeartbeat(BaseModel):
@@ -223,6 +335,21 @@ def result_message_id(
 ) -> uuid.UUID:
     """``uuid5(NS, "<attempt_id>:<type>")`` (messaging.md §4)."""
     return uuid.uuid5(MF_NAMESPACE, f"{attempt_id}:{type_}")
+
+
+def waiting_message_id(attempt_id: str, seq: int) -> uuid.UUID:
+    """``uuid5(NS, "<attempt_id>:step.waiting:<seq>")`` (messaging.md §4.3)."""
+    return uuid.uuid5(MF_NAMESPACE, f"{attempt_id}:step.waiting:{seq}")
+
+
+STEP_NAMESPACE: Final = uuid.UUID("fa1e7bfd-2c37-5637-bb2e-15cdf57e7e2d")
+"""``uuid5(NAMESPACE_URL, "https://manufacture.dev/steps")`` (messaging.md §4.5)."""
+
+
+def step_key_for(run_id: str, stage: str, step: str, item_index: int | None, visit: int) -> str:
+    """``uuid5(STEP_NS, "<run_id>:<stage>:<step>:<item_index|->:<visit>")``."""
+    item = "-" if item_index is None else str(item_index)
+    return str(uuid.uuid5(STEP_NAMESPACE, f"{run_id.lower()}:{stage}:{step}:{item}:{visit}"))
 
 
 def run_request_message_id(pipeline: str, dedup_key: str) -> uuid.UUID:
@@ -269,10 +396,27 @@ def decode(body: bytes) -> Envelope:
         raise EnvelopeError("message body is not a JSON object")
     if errors := validate_envelope(doc):
         raise EnvelopeError("; ".join(str(e) for e in errors[:5]))
+    if blob_errors := _blob_errors(doc.get("payload")):
+        raise EnvelopeError("; ".join(blob_errors[:5]))
     try:
         return Envelope.model_validate(doc)
     except ValidationError as exc:  # pragma: no cover - the schema is stricter
         raise EnvelopeError(f"invalid envelope: {exc.error_count()} error(s)") from exc
+
+
+def _blob_errors(node: object, path: str = "payload") -> list[str]:
+    """Every object with ``$blob`` must be a valid blob reference (contract 0.3.0)."""
+    found: list[str] = []
+    if isinstance(node, dict):
+        if "$blob" in node:
+            found += [f"{path}: {e}" for e in validate_blob_ref(node)]
+        else:
+            for key, value in node.items():
+                found += _blob_errors(value, f"{path}.{key}")
+    elif isinstance(node, list):
+        for i, value in enumerate(node):
+            found += _blob_errors(value, f"{path}[{i}]")
+    return found
 
 
 # --- broker topology --------------------------------------------------------------------------
@@ -314,6 +458,13 @@ class Topology:
     @staticmethod
     def work_key(module: str) -> str:
         return f"module.{module}"
+
+    def notify_queue(self, module: str) -> str:
+        return f"{self.prefix}mf.notify.{module}"
+
+    @staticmethod
+    def notify_key(module: str) -> str:
+        return f"notify.{module}"
 
     def control_queue(self, module: str, replica_id: str) -> str:
         return f"{self.prefix}mf.control.{module}.{replica_id}"
