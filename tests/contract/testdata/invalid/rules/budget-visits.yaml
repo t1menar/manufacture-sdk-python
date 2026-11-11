@@ -1,0 +1,16 @@
+# want: spec.budget.warn_usd | must be below run_usd
+# want: spec.stages[2].routes[0].max_visits | conflicting max_visits for stage "scenario"
+apiVersion: manufacture.dev/v1
+kind: Pipeline
+metadata: {name: budget-visits}
+spec:
+  budget: {run_usd: 5, warn_usd: 5}
+  stages:
+    - name: scenario
+      step: {module: writer}
+    - name: review1
+      step: {module: review, wait: {}, on_timeout: attention}
+      routes: [{when: "steps.review1.output.decision == 'rejected'", goto: scenario, max_visits: 3}]
+    - name: review2
+      step: {module: review, wait: {}, on_timeout: attention}
+      routes: [{when: "steps.review2.output.decision == 'rejected'", goto: scenario, max_visits: 4}]

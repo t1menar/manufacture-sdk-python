@@ -1,6 +1,6 @@
 """Module runtime: consumes commands, runs handlers, reports results to the core.
 
-Implements the replica side of ``docs/contract/messaging.md`` (contract 0.2.1):
+Implements the replica side of ``docs/contract/messaging.md`` (contract 0.3.0):
 
 - **Lifecycle**: connect, declare the work and control queues, ``module.online`` (again
   after every reconnect), ``module.heartbeat`` every 10 s, ``module.offline`` on graceful
@@ -11,8 +11,14 @@ Implements the replica side of ``docs/contract/messaging.md`` (contract 0.2.1):
 - **Idempotency by attempt id**: a duplicate delivery of a running attempt never starts the
   handler again (it is acked right away, messaging.md §4); a duplicate of a finished attempt
   re-publishes the cached result (same ``message_id`` = ``uuid5(NS, "<attempt>:<type>")``).
-- **Heartbeats** every ``lease_seconds / 3`` while a handler runs, plus ``ctx.progress``.
-- **Deadline**: the handler is cancelled at ``payload.deadline``; nothing is reported.
+- **Heartbeats**: one at once when the attempt starts (the core's execution timeout counts from it),
+  then every ``lease_seconds / 3`` while a handler runs, plus ``ctx.progress``; they carry ``usage``.
+- **Waiting**: ``ctx.wait`` sends ``step.waiting`` and stops the handler; the delivery is acked once the
+  broker confirmed it and the result comes later from ``Module.complete`` / ``Module.fail`` (any replica).
+- **Confirm**: ``ctx.confirm`` is an HTTP call to the core (``MF_CORE_URL``, ``MF_MODULE_TOKEN``).
+- **Notifications**: ``run.started`` / ``run.finished`` arrive on ``mf.notify.<module>`` when the module
+  registered ``@app.on_run_started`` / ``@app.on_run_finished``.
+- **Deadline**: the handler is cancelled at ``min(payload.deadline, start + timeout_seconds)``; nothing is reported.
 - **Cancellation**: ``step.cancel`` sets ``ctx.cancelled`` and cancels the handler task
   after ``cancel_grace_s``. Nothing is reported for a cancelled attempt.
 - **Graceful shutdown** on SIGTERM: stop consuming, wait ``shutdown_grace_s``, then cancel
@@ -29,8 +35,8 @@ import time
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Final, Generic, Literal
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any, Final, Generic, Literal, cast
 
 from pydantic import BaseModel, ValidationError
 
@@ -39,8 +45,17 @@ from manufacture._contract import CONTRACT_VERSION
 from manufacture._log import StructLogger, get_logger
 from manufacture._version import __version__
 from manufacture.app import RunRequest
-from manufacture.context import Context, S, Secrets, SourceContext
-from manufacture.errors import ErrorCode, StepError
+from manufacture.context import AttemptHandle, Budget, Context, S, Secrets, SourceContext
+from manufacture.errors import (
+    Cancelled,
+    DeadlineTooClose,
+    ErrorCode,
+    Fatal,
+    StepError,
+    StepWaiting,
+    Superseded,
+    Transient,
+)
 from manufacture.health import HealthServer
 from manufacture.settings import RuntimeSettings
 from manufacture.transport import Delivery, Identity, Inbound, Transport
@@ -77,6 +92,8 @@ def classify_exception(exc: BaseException) -> wire.StepFailed:
             code=exc.code,
             message=exc.message[:_MAX_ERROR_MESSAGE],
             retry_after_seconds=retry,
+            recommendation=exc.recommendation[:1024] if exc.recommendation else None,
+            details=exc.details,
         )
     text = f"{type(exc).__name__}: {exc}"[:_MAX_ERROR_MESSAGE]
     return wire.StepFailed(error_class="transient", code=ErrorCode.UNHANDLED, message=text)
@@ -96,6 +113,8 @@ class _Execution:
     task: asyncio.Task[None] | None = None
     handler_task: asyncio.Task[Any] | None = None
     stop_reason: StopReason | None = None
+    waiting: bool = False
+    wait_seq: int = 0
     progress: float | None = None
     message: str | None = None
     last_beat: float = 0.0
@@ -146,6 +165,9 @@ class Runtime(Generic[S]):
         self._executions: dict[str, _Execution] = {}
         self._completed: OrderedDict[str, Outcome | None] = OrderedDict()
         self._cancelled: OrderedDict[str, None] = OrderedDict()
+        self._waiting: OrderedDict[str, None] = OrderedDict()
+        self._notified: OrderedDict[str, None] = OrderedDict()
+        self._http: Any = None
         self._background: set[asyncio.Task[Any]] = set()
         self._source_runs: set[asyncio.Task[Any]] = set()
         self._shutdown = asyncio.Event()
@@ -189,10 +211,13 @@ class Runtime(Generic[S]):
         if self._started:
             raise RuntimeError("runtime already started")
         spec, sources = self.module.step_spec, self.module.sources
-        if spec is None and not sources:
-            raise RuntimeError(f"module {self.module.name} has no @step or @source handler")
+        if spec is None and not sources and not self.module.run_listeners:
+            raise RuntimeError(
+                f"module {self.module.name} has no @step, @source or run notification handler"
+            )
         _ = self.module.settings  # fail fast on invalid module settings
         self._started = True
+        self.module._runtime = self
         try:
             if (addr := self.settings.health) is not None:
                 self._health = HealthServer(addr[0], addr[1], ready=lambda: self.ready)
@@ -201,6 +226,8 @@ class Runtime(Generic[S]):
             await self.transport.connect(self.identity)
             await self.transport.consume(Inbound.CONTROL, self._on_control, prefetch=64)
             await self.transport.consume(Inbound.WORK, self._on_work, prefetch=self.concurrency)
+            if self.module.run_listeners:
+                await self.transport.consume(Inbound.NOTIFY, self._on_notify, prefetch=16)
         except BaseException:
             await self.abort()
             raise
@@ -258,6 +285,10 @@ class Runtime(Generic[S]):
             await self._health.stop()
         with contextlib.suppress(Exception):
             await self.transport.close()
+        if self._http is not None:
+            await self._http.aclose()
+        if self.module._runtime is self:
+            self.module._runtime = None
         self.log.info("stopped")
 
     async def abort(self) -> None:
@@ -335,7 +366,11 @@ class Runtime(Generic[S]):
             log.info("duplicate delivery of a running attempt; acking")
             await self._settle(delivery, "ack")
             return
-        if request.deadline <= datetime.now(UTC):
+        if attempt.id in self._waiting:
+            log.info("duplicate of a waiting attempt; acking")
+            await self._settle(delivery, "ack")
+            return
+        if request.deadline is not None and request.deadline <= datetime.now(UTC):
             log.warning("deadline already passed; dropping", deadline=request.deadline.isoformat())
             self._remember(attempt.id, None)
             await self._settle(delivery, "ack")
@@ -355,6 +390,21 @@ class Runtime(Generic[S]):
         async def sink(progress: float | None, message: str | None) -> None:
             await self._report_progress(holder[0], progress, message)
 
+        deadline = datetime.now(UTC) + timedelta(seconds=request.timeout_seconds)
+        if request.deadline is not None:
+            deadline = min(deadline, request.deadline)
+        budget = (
+            Budget(request.budget.run_usd, request.budget.spent_usd, request.budget.remaining_usd)
+            if request.budget
+            else None
+        )
+
+        async def wait_sink(reason: str, message: str | None, expected_by: datetime | None) -> None:
+            await self._send_waiting(holder[0], reason, message, expected_by)
+
+        async def confirm_sink(action: str, extend_seconds: int) -> None:
+            await self._confirm(holder[0], action, extend_seconds)
+
         ctx: Context[Any] = Context(
             module=self.module.name,
             run_id=env.run_id or "",
@@ -365,7 +415,7 @@ class Runtime(Generic[S]):
             item_index=request.item_index,
             attempt_id=attempt.id,
             attempt=attempt.number,
-            deadline=request.deadline,
+            deadline=deadline,
             config=request.config,
             settings=self.module.settings,
             secrets=self.secrets,
@@ -373,6 +423,13 @@ class Runtime(Generic[S]):
             progress_sink=sink,
             blob_prefix=request.blob_prefix,
             traceparent=env.traceparent,
+            step_key=request.step_key,
+            visit=request.visit,
+            budget=budget,
+            labels=request.labels,
+            priority=request.priority,
+            wait_sink=wait_sink,
+            confirm_sink=confirm_sink,
         )
         ex = _Execution(env=env, attempt=attempt, request=request, ctx=ctx, deliveries=[delivery])
         holder.append(ex)
@@ -380,6 +437,7 @@ class Runtime(Generic[S]):
         ex.task = asyncio.create_task(self._run(ex), name=f"mf-step-{attempt.id}")
 
     async def _run(self, ex: _Execution) -> None:
+        await self._send_heartbeat(ex)  # at once: the core's execution timeout counts from here
         heartbeat = asyncio.create_task(self._heartbeat_loop(ex))
         try:
             outcome = await self._invoke(ex)
@@ -388,10 +446,19 @@ class Runtime(Generic[S]):
             with contextlib.suppress(asyncio.CancelledError):
                 await heartbeat
         self._executions.pop(ex.attempt.id, None)
+        if (
+            ex.waiting
+        ):  # ``step.waiting`` is confirmed: the result comes later, the delivery is done
+            self._waiting[ex.attempt.id] = None
+            while len(self._waiting) > _COMPLETED_CAPACITY:
+                self._waiting.popitem(last=False)
+            for d in ex.deliveries:
+                await self._settle(d, "ack")
+            return
         self._remember(ex.attempt.id, outcome)
         await self._publish_and_settle(outcome, ex.deliveries)
 
-    async def _invoke(self, ex: _Execution) -> Outcome | None:
+    async def _invoke(self, ex: _Execution) -> Outcome | None:  # noqa: PLR0912
         spec: StepSpec[Any, Any, Any] | None = self.module.step_spec
         if spec is None:
             raise RuntimeError("no step handler registered")
@@ -418,6 +485,16 @@ class Runtime(Generic[S]):
             return None
         try:
             returned = ex.handler_task.result()
+        except StepWaiting:
+            log.info("step is waiting", duration_ms=ex.duration_ms)
+            return None
+        except (Superseded, Cancelled) as exc:
+            log.warning(
+                "confirm refused; nothing is reported", reason=type(exc).__name__, detail=exc.detail
+            )
+            return None
+        except DeadlineTooClose as exc:
+            return self._fail(ex, _failed("transient", "deadline_too_close", str(exc)))
         except asyncio.CancelledError:
             if ex.stop_reason == "shutdown":
                 log.warning("step interrupted by shutdown", duration_ms=ex.duration_ms)
@@ -450,6 +527,7 @@ class Runtime(Generic[S]):
             output=model.model_dump(mode="json"),
             replica_id=self.identity.replica_id,
             duration_ms=ex.duration_ms,
+            usage=self._usage(ex),
         )
         outcome = self._outcome(ex.env, ex.attempt, succeeded, ex.duration_ms)
         if len(outcome.body) > wire.MAX_MESSAGE_BYTES:
@@ -467,7 +545,17 @@ class Runtime(Generic[S]):
         return outcome
 
     def _fail(self, ex: _Execution, failure: wire.StepFailed) -> Outcome:
-        return self._outcome(ex.env, ex.attempt, failure, ex.duration_ms)
+        return self._outcome(
+            ex.env,
+            ex.attempt,
+            failure.model_copy(update={"usage": self._usage(ex)}),
+            ex.duration_ms,
+        )
+
+    @staticmethod
+    def _usage(ex: _Execution) -> wire.Usage | None:
+        doc = ex.ctx.usage
+        return wire.Usage.model_validate(doc) if doc else None
 
     def _stop_execution(self, ex: _Execution, reason: StopReason, *, grace_s: float) -> None:
         if ex.stop_reason is None:
@@ -493,6 +581,17 @@ class Runtime(Generic[S]):
     async def _on_control(self, delivery: Delivery) -> None:
         try:
             env = wire.decode(delivery.body)
+            if env.type == "run.rejected":
+                rejected = wire.RunRejected.model_validate(env.payload)
+                self.log.error(
+                    "core rejected a run request",
+                    pipeline=rejected.pipeline,
+                    dedup_key=rejected.dedup_key,
+                    code=rejected.code,
+                    message=rejected.message,
+                )
+                await self._settle(delivery, "ack")
+                return
             if env.type != "step.cancel" or env.attempt is None:
                 raise wire.EnvelopeError(f"unexpected {env.type} on the control queue")
         except wire.EnvelopeError as exc:
@@ -533,7 +632,10 @@ class Runtime(Generic[S]):
             return
         ex.last_beat = time.monotonic()
         payload = wire.StepHeartbeat(
-            progress=ex.progress, message=ex.message, replica_id=self.identity.replica_id
+            progress=ex.progress,
+            message=ex.message,
+            replica_id=self.identity.replica_id,
+            usage=self._usage(ex),
         )
         await self._publish_best_effort(
             "step.heartbeat",
@@ -575,6 +677,7 @@ class Runtime(Generic[S]):
             kinds=self.module.kinds,
             input_schema=spec.input_model.model_json_schema() if spec else None,
             output_schema=spec.output_model.model_json_schema() if spec else None,
+            min_budget_usd=self.module.min_budget_usd,
         )
 
     # --- sources ----------------------------------------------------------------------------
@@ -668,7 +771,12 @@ class Runtime(Generic[S]):
         pipeline = item.pipeline or source.pipeline
         dedup_key = item.dedup_key or default_key
         payload = wire.RunRequested(
-            pipeline=pipeline, data=item.data, dedup_key=dedup_key, trigger_id=trigger_id
+            pipeline=pipeline,
+            data=item.data,
+            dedup_key=dedup_key,
+            trigger_id=trigger_id,
+            priority=item.priority,
+            labels=item.labels or None,
         )
         mid, body = wire.encode(
             type_="run.requested",
@@ -686,6 +794,142 @@ class Runtime(Generic[S]):
             await asyncio.sleep(every_s)
             if self._accepting:
                 self._spawn_source(source, str(uuid.uuid4()), "every", {}, send_trigger_id=False)
+
+    # --- waiting, confirm, late results, notifications ---------------------------------------
+
+    async def _send_waiting(
+        self, ex: _Execution, reason: str, message: str | None, expected_by: datetime | None
+    ) -> None:
+        ex.wait_seq += 1
+        payload = wire.StepWaiting(
+            reason=cast("wire.WaitReason", reason),  # validated by Context.wait
+            seq=ex.wait_seq,
+            message=message[:1024] if message else None,
+            expected_by=expected_by,
+            replica_id=self.identity.replica_id,
+            usage=self._usage(ex),
+        )
+        mid, body = wire.encode(
+            type_="step.waiting",
+            producer=self.producer,
+            payload=payload,
+            msg_id=wire.waiting_message_id(ex.attempt.id, ex.wait_seq),
+            run_id=ex.env.run_id,
+            attempt=ex.attempt,
+            traceparent=ex.env.traceparent,
+        )
+        if not await self._publish_with_retry("step.waiting", mid, body):
+            raise Transient("could not publish step.waiting", code="publish_failed")
+        ex.waiting = True
+
+    async def finish(
+        self,
+        handle: AttemptHandle,
+        result: wire.StepSucceeded | wire.StepFailed,
+        *,
+        traceparent: str | None = None,
+    ) -> None:
+        """Publish the result of a waiting attempt (from any replica). Raises ``ConnectionError``."""
+        attempt = wire.AttemptRef(id=handle.attempt_id, number=handle.number)
+        if isinstance(result, wire.StepFailed):
+            result = result.model_copy(update={"replica_id": self.identity.replica_id})
+            type_: ResultType = "step.failed"
+        else:
+            result = result.model_copy(update={"replica_id": self.identity.replica_id})
+            type_ = "step.succeeded"
+        mid = wire.result_message_id(handle.attempt_id, type_)
+        _, body = wire.encode(
+            type_=type_,
+            producer=self.producer,
+            payload=result,
+            msg_id=mid,
+            run_id=handle.run_id,
+            attempt=attempt,
+            traceparent=traceparent,
+        )
+        if len(body) > wire.MAX_MESSAGE_BYTES:
+            raise ValueError(
+                f"result is {len(body)} bytes; limit {wire.MAX_MESSAGE_BYTES} (use blobs)"
+            )
+        if not await self._publish_with_retry(type_, mid, body):
+            raise ConnectionError(f"could not publish {type_}")
+        self._waiting.pop(handle.attempt_id, None)
+
+    async def _confirm(self, ex: _Execution, action: str, extend_seconds: int) -> None:
+        import httpx  # noqa: PLC0415
+
+        base = self.settings.core_url
+        token = self.settings.module_token
+        if not base or token is None:
+            raise Fatal(
+                "MF_CORE_URL and MF_MODULE_TOKEN are required for ctx.confirm",
+                code="confirm_unavailable",
+            )
+        if self._http is None:
+            self._http = httpx.AsyncClient(timeout=10.0)
+        url = f"{base.rstrip('/')}/api/v1/attempts/{ex.attempt.id}/confirm"
+        body = {
+            "step_key": ex.request.step_key,
+            "action": action[:128],
+            "extend_seconds": extend_seconds,
+        }
+        try:
+            resp = await self._http.post(
+                url, json=body, headers={"Authorization": f"Bearer {token.get_secret_value()}"}
+            )
+        except httpx.HTTPError as exc:
+            raise Transient(
+                f"confirm failed: {type(exc).__name__}", code="confirm_unreachable"
+            ) from exc
+        if resp.status_code in {401, 403, 404, 422}:
+            raise Fatal(
+                f"confirm rejected by the core: HTTP {resp.status_code}", code="confirm_rejected"
+            )
+        if resp.status_code >= 300:
+            raise Transient(f"confirm failed: HTTP {resp.status_code}", code="confirm_unreachable")
+        doc = resp.json()
+        result, detail = doc.get("result"), doc.get("detail")
+        if result == "ok":
+            if (lease := doc.get("deadline")) and not ex.ctx.cancelled.is_set():
+                ex.ctx.log.info("confirmed", action=action, deadline=str(lease))
+            return
+        if result == "superseded":
+            raise Superseded("attempt is no longer current", detail=detail)
+        if result == "cancelled":
+            raise Cancelled("run or step was cancelled", detail=detail)
+        if result == "deadline":
+            raise DeadlineTooClose("not enough time before the deadline", detail=detail)
+        raise Transient(f"unexpected confirm result {result!r}", code="confirm_unreachable")
+
+    async def _on_notify(self, delivery: Delivery) -> None:
+        try:
+            env = wire.decode(delivery.body)
+            if env.type not in {"run.started", "run.finished"} or env.run_id is None:
+                raise wire.EnvelopeError(f"unexpected {env.type} on the notify queue")
+        except wire.EnvelopeError as exc:
+            self.log.error("dead-lettering invalid notification", reason=str(exc)[:300])
+            await self._settle(delivery, "reject")
+            return
+        mid = str(env.message_id)
+        if mid in self._notified:
+            await self._settle(delivery, "ack")
+            return
+        payload: wire.RunStarted | wire.RunFinished = (
+            wire.RunStarted.model_validate(env.payload)
+            if env.type == "run.started"
+            else wire.RunFinished.model_validate(env.payload)
+        )
+        try:
+            for listener in self.module.run_listeners.get(env.type, ()):
+                await listener(env.run_id, payload)
+        except Exception:
+            self.log.exception("run notification handler failed", type=env.type, run_id=env.run_id)
+            await self._settle(delivery, "requeue")
+            return
+        self._notified[mid] = None
+        while len(self._notified) > _COMPLETED_CAPACITY:
+            self._notified.popitem(last=False)
+        await self._settle(delivery, "ack")
 
     # --- publishing helpers -----------------------------------------------------------------
 

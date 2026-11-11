@@ -1,0 +1,57 @@
+# The pipeline of docs/patterns/review-gate.md.
+apiVersion: manufacture.dev/v1
+kind: Pipeline
+metadata: {name: video-review}
+spec:
+  concurrency: {max_runs: 2, count_waiting: false}
+  budget: {run_usd: 5, warn_usd: 4}
+  stages:
+    - name: scenario
+      step:
+        id: scenario
+        module: module-scenario
+        timeout: 20m
+        retry: {max_attempts: 3}
+        input:
+          idea: "data.idea"
+          previous: "visit > 1 ? steps.scenario.visits[visit - 1].output : {}"
+          comment: "has(steps.review) && has(steps.review.output.comment) ? steps.review.output.comment : ''"
+          round: "visit"
+    - name: review
+      step:
+        id: review
+        module: module-review
+        timeout: 10m
+        wait: {timeout: 2d}
+        on_timeout: attention
+        on_cancel: attention
+        merge: none
+        input:
+          scenario: "steps.scenario.output"
+          round: "steps.scenario.visit"
+      routes:
+        - when: "steps.review.output.decision == 'rejected'"
+          goto: scenario
+          max_visits: 3
+    - name: publish
+      step: {module: module-instagram-publisher, timeout: 15m, on_timeout: attention, input: {video: "data.video"}}
+---
+apiVersion: manufacture.dev/v1
+kind: Module
+metadata: {name: module-review}
+spec:
+  image: ghcr.io/t1menar/mf-review:1.0.0
+  replicas: 2
+---
+apiVersion: manufacture.dev/v1
+kind: Module
+metadata: {name: module-scenario}
+spec:
+  image: ghcr.io/t1menar/mf-scenario:1.0.0
+  min_budget_usd: 0.5
+---
+apiVersion: manufacture.dev/v1
+kind: Module
+metadata: {name: module-instagram-publisher}
+spec:
+  image: ghcr.io/t1menar/mf-ig-publisher:1.0.0

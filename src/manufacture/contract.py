@@ -30,6 +30,7 @@ __all__ = [
     "SpecError",
     "check_resource",
     "schema",
+    "validate_blob_ref",
     "validate_envelope",
     "validate_resource",
 ]
@@ -136,3 +137,9 @@ def validate_envelope(doc: Mapping[str, Any]) -> list[ResourceError]:
     """Validate a broker message (envelope v2 and its typed payload) against the contract."""
     errors = {e for err in _validator(ENVELOPE_SCHEMA).iter_errors(doc) for e in _flatten(err)}
     return sorted(errors, key=lambda e: (e.path, e.message))
+
+
+def validate_blob_ref(doc: Mapping[str, Any]) -> list[str]:
+    """Validate one ``{"$blob": ...}`` reference against ``envelope/v2/blob-ref.schema.json``."""
+    validator = _validator("envelope/v2/blob-ref.schema.json")
+    return sorted({e.message for e in validator.iter_errors(doc)})

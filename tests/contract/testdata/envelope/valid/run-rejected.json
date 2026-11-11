@@ -1,0 +1,1 @@
+{"message_id":"44444444-4444-4444-8444-444444444404","type":"run.rejected","schema_version":2,"occurred_at":"2026-11-10T20:00:05Z","producer":"core","payload":{"request_message_id":"11b196cd-ceeb-55d1-81e1-5ff428ee0efc","pipeline":"helo-world","dedup_key":"t1:0","code":"unknown_pipeline","message":"pipeline \"helo-world\" does not exist"}}

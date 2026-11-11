@@ -15,6 +15,8 @@ class Inbound(StrEnum):
 
     WORK = "work"
     """``mf.module.<name>``: ``step.requested`` and ``source.trigger``, shared by replicas."""
+    NOTIFY = "notify"
+    """``mf.notify.<name>``: ``run.started`` / ``run.finished`` (only for subscribed modules)."""
     CONTROL = "control"
     """``mf.control.<name>.<replica>``: ``step.cancel``, one queue per replica."""
 

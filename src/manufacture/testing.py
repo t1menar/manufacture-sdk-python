@@ -13,7 +13,7 @@ import asyncio
 import json
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, Literal
 
 from pydantic import BaseModel
@@ -24,6 +24,10 @@ from manufacture.settings import RuntimeSettings
 from manufacture.transport import DeliveryHandler, Identity, Inbound, ReconnectHandler
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    import httpx
+
     from manufacture.app import Module
     from manufacture.runtime import Runtime
 
@@ -37,8 +41,11 @@ __all__ = [
     "SourceCallResult",
     "StepCallResult",
     "call_on_start",
+    "call_run_event",
     "call_source",
     "call_step",
+    "run_finished",
+    "run_started",
     "source_trigger",
     "step_cancel",
     "step_request",
@@ -174,12 +181,12 @@ class FakeTransport:
             await self._changed.wait_for(lambda: len(self.of_type(type_)) >= count)
         return self.of_type(type_)
 
-    async def wait_for_result(self, timeout: float = 5.0) -> Published:
+    async def wait_for_result(self, timeout: float = 5.0, *, waiting: bool = False) -> Published:
+        """First ``step.succeeded`` / ``step.failed`` (and ``step.waiting`` when ``waiting``)."""
+        types = {"step.succeeded", "step.failed"} | ({"step.waiting"} if waiting else set())
         async with asyncio.timeout(timeout), self._changed:
-            await self._changed.wait_for(
-                lambda: any(p.type in {"step.succeeded", "step.failed"} for p in self.published)
-            )
-        return next(p for p in self.published if p.type in {"step.succeeded", "step.failed"})
+            await self._changed.wait_for(lambda: any(p.type in types for p in self.published))
+        return next(p for p in self.published if p.type in types)
 
 
 RUN_ID: Final = "11111111-1111-4111-8111-111111111111"
@@ -227,6 +234,10 @@ def step_request(
     deadline: datetime | None = None,
     timeout_s: float = 60.0,
     traceparent: str | None = None,
+    visit: int = 1,
+    budget: dict[str, float] | None = None,
+    labels: dict[str, str] | None = None,
+    priority: int | None = None,
 ) -> bytes:
     """Body of a ``step.requested`` envelope as the core would send it."""
     data = input.model_dump(mode="json") if isinstance(input, BaseModel) else input
@@ -237,12 +248,22 @@ def step_request(
         "step": step,
         "input": data or {},
         "config": config or {},
-        "deadline": (deadline or datetime.now(UTC) + timedelta(seconds=timeout_s)).isoformat(),
+        "step_key": wire.step_key_for(run_id, stage, step, item_index, visit),
+        "visit": visit,
+        "timeout_seconds": max(1, int(timeout_s)),
         "lease_seconds": lease_seconds,
         "blob_prefix": f"s3://mf-blobs/runs/{run_id}/{step}/{attempt_id}/",
     }
+    if deadline is not None:
+        payload["deadline"] = deadline.isoformat()
     if item_index is not None:
         payload["item_index"] = item_index
+    if budget is not None:
+        payload["budget"] = budget
+    if labels:
+        payload["labels"] = labels
+    if priority is not None:
+        payload["priority"] = priority
     ref = wire.AttemptRef(id=attempt_id, number=attempt)
     return _envelope("step.requested", payload, run_id=run_id, attempt=ref, traceparent=traceparent)
 
@@ -267,6 +288,54 @@ def source_trigger(
     return _envelope("source.trigger", payload)
 
 
+def run_started(
+    *,
+    run_id: str = RUN_ID,
+    pipeline: str = "pipeline",
+    labels: dict[str, str] | None = None,
+    dedup_key: str | None = None,
+) -> bytes:
+    """Body of a ``run.started`` notification."""
+    payload: dict[str, Any] = {
+        "pipeline": pipeline,
+        "revision": 1,
+        "trigger": {"kind": "source"},
+        "started_at": datetime.now(UTC).isoformat(),
+    }
+    if labels:
+        payload["labels"] = labels
+    if dedup_key:
+        payload["dedup_key"] = dedup_key
+    return _envelope("run.started", payload, run_id=run_id)
+
+
+def run_finished(
+    *,
+    status: Literal["succeeded", "failed", "cancelled"] = "succeeded",
+    run_id: str = RUN_ID,
+    pipeline: str = "pipeline",
+    labels: dict[str, str] | None = None,
+    cost_usd: float = 0.0,
+    error: dict[str, str] | None = None,
+    data: dict[str, Any] | None = None,
+) -> bytes:
+    """Body of a ``run.finished`` notification."""
+    payload: dict[str, Any] = {
+        "pipeline": pipeline,
+        "revision": 1,
+        "status": status,
+        "finished_at": datetime.now(UTC).isoformat(),
+        "usage": {"cost_usd": cost_usd},
+    }
+    if labels:
+        payload["labels"] = labels
+    if error:
+        payload["error"] = error
+    if data is not None:
+        payload["data"] = data
+    return _envelope("run.finished", payload, run_id=run_id)
+
+
 @dataclass(frozen=True)
 class StepCallResult:
     type: str
@@ -276,6 +345,11 @@ class StepCallResult:
     @property
     def succeeded(self) -> bool:
         return self.type == "step.succeeded"
+
+    @property
+    def waiting(self) -> bool:
+        """The handler called ``ctx.wait``: ``payload`` is the ``step.waiting`` payload."""
+        return self.type == "step.waiting"
 
     @property
     def output(self) -> dict[str, Any]:
@@ -290,21 +364,57 @@ async def call_step(
     *,
     config: dict[str, Any] | None = None,
     timeout_s: float = 60.0,
+    visit: int = 1,
+    budget: dict[str, float] | None = None,
+    labels: dict[str, str] | None = None,
+    core: Callable[[httpx.Request], httpx.Response] | None = None,
 ) -> StepCallResult:
-    """Run the module's step handler once, without a broker, and return its outcome."""
+    """Run the module's step handler once, without a broker, and return its outcome.
+
+    ``core`` answers the HTTP calls of ``ctx.confirm`` (``POST .../attempts/<id>/confirm``);
+    without it ``confirm`` fails. A handler that calls ``ctx.wait`` ends the call with
+    ``result.waiting`` (use :func:`finish_waiting` style tests via ``Module.complete``).
+    """
     from manufacture.runtime import Runtime  # noqa: PLC0415 (import cycle)
 
     transport = FakeTransport()
-    settings = RuntimeSettings(health_addr="", replica_id="test", module_heartbeat_s=3600)
+    extra: dict[str, Any] = {}
+    if core is not None:
+        extra = {"core_url": "http://core.test", "module_token": "mft_test"}
+    settings = RuntimeSettings(health_addr="", replica_id="test", module_heartbeat_s=3600, **extra)
     runtime = Runtime(module, settings=settings, transport=transport)
+    if core is not None:
+        import httpx  # noqa: PLC0415
+
+        runtime._http = httpx.AsyncClient(transport=httpx.MockTransport(core))
     await runtime.start()
     try:
-        await transport.deliver(step_request(input, config=config, timeout_s=timeout_s))
-        result = await transport.wait_for_result(timeout=timeout_s + 5)
+        await transport.deliver(
+            step_request(
+                input, config=config, timeout_s=timeout_s, visit=visit, budget=budget, labels=labels
+            )
+        )
+        result = await transport.wait_for_result(timeout=timeout_s + 5, waiting=True)
     finally:
         await runtime.stop()
     beats = [p.payload for p in transport.of_type("step.heartbeat")]
     return StepCallResult(result.type, result.payload, beats)
+
+
+async def call_run_event(module: Module[Any], body: bytes, *, timeout_s: float = 5.0) -> bool:
+    """Deliver one ``run.started`` / ``run.finished`` (see :func:`run_started`, :func:`run_finished`).
+
+    Returns ``True`` when the module handled it and acked, ``False`` when it asked for a redelivery.
+    """
+    transport = FakeTransport()
+    runtime = _quiet_runtime(module, transport, schedules=False, grace_s=timeout_s)
+    await runtime.start()
+    try:
+        delivery = await transport.deliver(body, stream=Inbound.NOTIFY)
+        state = await delivery.wait(timeout=timeout_s)
+    finally:
+        await runtime.stop()
+    return state == "acked"
 
 
 @dataclass(frozen=True)

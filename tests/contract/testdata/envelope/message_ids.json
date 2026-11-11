@@ -1,0 +1,53 @@
+{
+  "description": "Derived message ids: uuid5(MSG_NS, name).",
+  "message_namespace": "32e7ee34-6c60-51c1-a912-93b117ba36cd",
+  "cases": [
+    {
+      "kind": "result",
+      "attempt_id": "22222222-2222-4222-8222-222222222222",
+      "type": "step.succeeded",
+      "name": "22222222-2222-4222-8222-222222222222:step.succeeded",
+      "message_id": "22c4fe18-bb14-53d2-a566-964fc52467ad"
+    },
+    {
+      "kind": "result",
+      "attempt_id": "22222222-2222-4222-8222-222222222222",
+      "type": "step.failed",
+      "name": "22222222-2222-4222-8222-222222222222:step.failed",
+      "message_id": "8d171fff-7269-5fb1-93fc-dc233ce6ff5b"
+    },
+    {
+      "kind": "waiting",
+      "attempt_id": "22222222-2222-4222-8222-222222222222",
+      "seq": 1,
+      "name": "22222222-2222-4222-8222-222222222222:step.waiting:1",
+      "message_id": "7840fc93-e2a0-55d1-94ce-f89e0c89d1a0"
+    },
+    {
+      "kind": "waiting",
+      "attempt_id": "22222222-2222-4222-8222-222222222222",
+      "seq": 2,
+      "name": "22222222-2222-4222-8222-222222222222:step.waiting:2",
+      "message_id": "cb8a6035-3877-57b7-8f7e-51850ef52d00"
+    },
+    {
+      "kind": "run_started",
+      "run_id": "0190f5a2-7c1e-7b3a-9e4d-2f1a3b4c5d6e",
+      "name": "0190f5a2-7c1e-7b3a-9e4d-2f1a3b4c5d6e:run.started",
+      "message_id": "2d744b33-755c-5dd9-a3bc-241df5da5449"
+    },
+    {
+      "kind": "run_finished",
+      "run_id": "0190f5a2-7c1e-7b3a-9e4d-2f1a3b4c5d6e",
+      "name": "0190f5a2-7c1e-7b3a-9e4d-2f1a3b4c5d6e:run.finished",
+      "message_id": "557666d0-97ce-50a7-91e1-4575f556ac45"
+    },
+    {
+      "kind": "run_requested",
+      "pipeline": "hello-world",
+      "dedup_key": "t1:0",
+      "name": "run.requested:hello-world:t1:0",
+      "message_id": "11b196cd-ceeb-55d1-81e1-5ff428ee0efc"
+    }
+  ]
+}
